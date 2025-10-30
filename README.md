@@ -29,3 +29,6 @@ Etablere et stort, åpent norsk **medisinsk tale-til-tekst-treningssett** for å
 ## Forventet effekt
 - Raskere utvikling og **rettferdig (fair) evaluering** av medisinske tale-til-tekst-løsninger
 - Potensial for **lavere kostnader** og **bedre kvalitet** i anskaffelser og klinisk bruk
+
+  ## Arbeidspakkeplan
+  - [Midlertidig arbeidspakkeplan](arbeidspakke.md)
