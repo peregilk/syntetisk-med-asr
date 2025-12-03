@@ -9,7 +9,9 @@ Usage:
     from tools import get_random_snomed, get_random_scenario
     
     term = get_random_snomed()
+    terms = get_random_snomed(5)  # Returns list of 5 terms
     scenario = get_random_scenario()
+    scenarios = get_random_scenario(3)  # Returns list of 3 scenarios
 """
 
 import json
@@ -62,32 +64,58 @@ except FileNotFoundError:
     )
 
 
-def get_random_snomed():
+def get_random_snomed(N=None):
     """
-    Get a random Norwegian medical term from SNOMED CT.
+    Get random Norwegian medical term(s) from SNOMED CT.
+    
+    Args:
+        N (int, optional): Number of terms to return. If None, returns a single term.
     
     Returns:
-        str: A random Norwegian medical term
+        str or list: A random Norwegian medical term (if N is None) or a list of N terms
         
     Example:
         >>> term = get_random_snomed()
         >>> print(term)
         "parathyreoidea"
+        >>> terms = get_random_snomed(5)
+        >>> print(terms)
+        ["parathyreoidea", "angstlidelse", ...]
     """
-    return random.choice(_terms)
+    if N is None:
+        return random.choice(_terms)
+    else:
+        if N <= len(_terms):
+            return random.sample(_terms, N)
+        else:
+            # If N > available terms, allow duplicates
+            return random.choices(_terms, k=N)
 
 
-def get_random_scenario():
+def get_random_scenario(N=None):
     """
-    Get a random medical scenario from categories.
+    Get random medical scenario(s) from categories.
+    
+    Args:
+        N (int, optional): Number of scenarios to return. If None, returns a single scenario.
     
     Returns:
-        str: A random medical scenario text
+        str or list: A random medical scenario text (if N is None) or a list of N scenarios
         
     Example:
         >>> scenario = get_random_scenario()
         >>> print(scenario)
         "På en sykehuspoliklinikk går legen og pasienten gjennom nye funn sammen."
+        >>> scenarios = get_random_scenario(3)
+        >>> print(scenarios)
+        ["På en sykehuspoliklinikk...", "I et rom på...", ...]
     """
-    return random.choice(_scenarios)
+    if N is None:
+        return random.choice(_scenarios)
+    else:
+        if N <= len(_scenarios):
+            return random.sample(_scenarios, N)
+        else:
+            # If N > available scenarios, allow duplicates
+            return random.choices(_scenarios, k=N)
 
