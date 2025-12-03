@@ -1,0 +1,21 @@
+Skriv en tett, faglig og naturalistisk medisinsk tekst på norsk basert på følgende scenario: 
+
+SCENARIO: "${scenario}" 
+
+MEDISINSKE TERMER SOM INKLUDERES: "${snomed_required}" 
+
+KRAV TIL TEKSTEN: 
+- Det er ikke lov å bruke scenario i output 
+- Teksten skal være ren norsk prosa uten punktlister eller meta-kommentarer. 
+- Integrer minst EN av de gitte medisinske termene på en naturlig måte. Termene skal brukes med høy tetthet og flettes inn i klinisk plausible beskrivelser. 
+- Legg til mer medisinske termer som passer i sammenhengen. 
+- Selv om termene kan ha uvanlige kombinasjoner, skal teksten fortsatt ha faglig logikk i forhold til scenarioet. 
+- Ordvalg, setningslengde og struktur skal variere fra gang til gang for å sikre høy språklig variasjon i datasettet. 
+- Ingen faste tekstblokker eller repeterende fraser mellom genereringer. 
+- Teksten skal være innholdstett og klinisk orientert, som i journalnotater, faglige beskrivelser eller medisinske observasjoner. 
+- Unngå å referere til “scenario”, “liste”, “oppgave” eller at teksten er generert. 
+- Skriv ca 100 ord fordelt på 1–3 avsnitt, med naturlig flyt og variert uttrykksform. 
+
+Output:
+Returner **kun én linje JSONL** med nøkkelen `text`, slik:
+{"text": "<selve avsnittet her>"}
