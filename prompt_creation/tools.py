@@ -18,30 +18,27 @@ import json
 import random
 from pathlib import Path
 
+try:
+    from .processing import clean_phrase as _clean_phrase
+    from .processing import load_snomed_terms as _load_snomed_terms
+    from .processing import preprocess_snomed as _preprocess_snomed
+except ImportError:  # Fallback for running as a script from this directory.
+    from processing import clean_phrase as _clean_phrase
+    from processing import load_snomed_terms as _load_snomed_terms
+    from processing import preprocess_snomed as _preprocess_snomed
+
 # Load terms when module is imported
 _script_dir = Path(__file__).parent
 _project_root = _script_dir.parent
 _terms_file = _project_root / "data" / "snomed_ct_norwegian_terms.jsonl"
 _scenarios_file = _project_root / "data" / "categories.jsonl"
+_word_occurrence_dir = _project_root / "data" / "word_occurences"
+
+_preprocessed_dir = _project_root / "data" / "preprocessed"
 
 # Load SNOMED terms
-_terms = []
 try:
-    with open(_terms_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            try:
-                data = json.loads(line.strip())
-                if 'nb' in data and data['nb']:
-                    nb_data = data['nb']
-                    if 'akseptabel' in nb_data:
-                        _terms.extend(nb_data['akseptabel'])
-                    if 'tilrådd' in nb_data:
-                        _terms.extend(nb_data['tilrådd'])
-            except json.JSONDecodeError:
-                continue
-    
-    # Deduplicate terms
-    _terms = list(set(_terms))
+    _terms = list(dict.fromkeys(_load_snomed_terms(_terms_file)))
 except FileNotFoundError:
     raise FileNotFoundError(
         f"SNOMED CT terms file not found: {_terms_file}"
@@ -118,4 +115,26 @@ def get_random_scenario(N=None):
         else:
             # If N > available scenarios, allow duplicates
             return random.choices(_scenarios, k=N)
+
+
+def preprocess_snomed(
+    min_snomed_count: int = 0,
+    max_corpus_count: int = 100,
+    keep_unfiltered: bool = False,
+    merge_variants: bool = True,
+    rank_alpha: float = 0.7,
+    rank_cap: int = 10000,
+) -> dict[str, Path]:
+    """Preprocess SNOMED phrases and terms into reusable JSONL artifacts."""
+    return _preprocess_snomed(
+        terms_file=_terms_file,
+        preprocessed_dir=_preprocessed_dir,
+        word_occurrence_dir=_word_occurrence_dir,
+        min_snomed_count=min_snomed_count,
+        max_corpus_count=max_corpus_count,
+        keep_unfiltered=keep_unfiltered,
+        merge_variants=merge_variants,
+        rank_alpha=rank_alpha,
+        rank_cap=rank_cap,
+    )
 

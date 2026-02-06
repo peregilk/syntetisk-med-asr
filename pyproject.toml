@@ -1,0 +1,12 @@
+[project]
+name = "syntetisk-med-asr"
+version = "0.1.0"
+description = "Creating synthetic medical ASR data for Norwegian."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipykernel>=7.1.0",
+    "nltk>=3.9.1",
+    "openai>=2.16.0",
+    "pandas>=3.0.0",
+]
