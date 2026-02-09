@@ -156,6 +156,9 @@ def _init_plan(
 		term = entry.get("term")
 		if not isinstance(term, str) or not term.strip():
 			continue
+		term_id = entry.get("term_id")
+		if not isinstance(term_id, str) or not term_id.strip():
+			term_id = f"term_{len(plan_entries) + 1:04d}"
 		# Keep usage list for 50/50 selection later.
 		usage = entry.get("usage") if isinstance(entry.get("usage"), list) else []
 		corpus_count = entry.get("corpus_count", 0)
@@ -165,10 +168,12 @@ def _init_plan(
 		target_remaining = max(0, target_count - corpus_count)
 		plan_entries.append(
 			{
+				"term_id": term_id,
 				"term": term,
 				"corpus_count": corpus_count,
 				"target_count": target_count,
 				"used_in_output": 0,
+				"prompt_counter": 0,
 				"target_remaining": target_remaining,
 				"usage": usage,
 			}
@@ -239,6 +244,21 @@ def _generate_prompts(
 	if not plan_entries:
 		raise FileNotFoundError(f"No plan entries found in {plan_file}")
 
+	# Build counters from existing output to avoid reusing IDs.
+	existing_prompts = _read_jsonl(output_file)
+	max_counters: dict[str, int] = {}
+	for item in existing_prompts:
+		prompt_id = item.get("id")
+		if not isinstance(prompt_id, str) or "_" not in prompt_id:
+			continue
+		term_id, suffix = prompt_id.rsplit("_", 1)
+		if not suffix.isdigit():
+			continue
+		count = int(suffix)
+		current_max = max_counters.get(term_id, 0)
+		if count > current_max:
+			max_counters[term_id] = count
+
 	template_content = template_file.read_text(encoding="utf-8")
 	template = string.Template(template_content)
 	rng = random.Random(seed)
@@ -248,6 +268,17 @@ def _generate_prompts(
 		term = entry.get("term")
 		if not isinstance(term, str) or not term.strip():
 			continue
+		term_id = entry.get("term_id")
+		if not isinstance(term_id, str) or not term_id.strip():
+			term_id = f"term_{index:04d}"
+		target_remaining = entry.get("target_remaining", 0)
+		if not isinstance(target_remaining, int) or target_remaining <= 0:
+			continue
+		prompt_counter = max_counters.get(term_id, entry.get("prompt_counter", 0))
+		if not isinstance(prompt_counter, int) or prompt_counter < 0:
+			prompt_counter = 0
+		prompt_counter += 1
+		entry["prompt_counter"] = prompt_counter
 		usage = entry.get("usage") if isinstance(entry.get("usage"), list) else []
 		# Required expression uses the same 50/50 rule as optional expressions.
 		required_expr = _choose_expression(term, usage, rng)
@@ -273,13 +304,17 @@ def _generate_prompts(
 		)
 		prompts.append(
 			{
-				"id": f"term_{index}",
+				"id": f"{term_id}_{prompt_counter:03d}",
 				"template": template_file.name,
 				"prompt": prompt_text,
 			}
 		)
 
-	_write_jsonl(output_file, prompts)
+	if prompts:
+		with output_file.open("a", encoding="utf-8") as handle:
+			for item in prompts:
+				handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+	_write_jsonl(plan_file, plan_entries)
 
 
 def _build_parser() -> argparse.ArgumentParser:
