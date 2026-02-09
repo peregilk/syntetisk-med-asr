@@ -9,4 +9,5 @@ dependencies = [
     "nltk>=3.9.1",
     "openai>=2.16.0",
     "pandas>=3.0.0",
+    "tqdm>=4.66.0",
 ]
