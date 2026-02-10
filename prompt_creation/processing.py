@@ -5,6 +5,7 @@ import argparse
 import json
 import math
 import re
+import unicodedata
 import zipfile
 from collections import defaultdict
 from pathlib import Path
@@ -20,6 +21,49 @@ _CHEMICAL_SPLIT_PATTERN = re.compile(r"[^0-9A-Za-zÆØÅæøå]+")
 _TERM_ALLOWED_PATTERN = re.compile(r"^[0-9A-Za-zÆØÅæøå-]+$")  # Terms allow only letters/digits and hyphen (no spaces/commas).
 _PHRASE_DISALLOWED_PATTERN = re.compile(r"[^0-9A-Za-zÆØÅæøå ,\-−]")  # Phrases may include spaces/commas/hyphen/minus.
 _HYPHENATED_NUMBER_PATTERN = re.compile(r"^\d+(?:-\d+)+$")
+
+
+def normalize_identifier(term: str) -> str:
+    """Normalize a term for ID generation (ASCII-ish, lowercase, no punctuation)."""
+    cleaned = term.lower().strip()
+    cleaned = unicodedata.normalize("NFC", cleaned)
+    return re.sub(r"[^a-zæøå]", "", cleaned)
+
+
+def _base36_encode(value: int, width: int) -> str:
+    """Encode a non-negative integer as zero-padded base36."""
+    if value < 0:
+        raise ValueError("Base36 encoding requires non-negative integers")
+    if value == 0:
+        encoded = "0"
+    else:
+        digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+        parts: list[str] = []
+        current = value
+        while current:
+            current, remainder = divmod(current, 36)
+            parts.append(digits[remainder])
+        encoded = "".join(reversed(parts))
+    return encoded.zfill(width)
+
+
+def build_term_id_map(entries: list[dict], width: int = 3) -> dict[str, str]:
+    """Build stable term IDs based on normalized lexicographic order."""
+    sortable: list[tuple[str, str]] = []
+    for entry in entries:
+        term = entry.get("term")
+        if not isinstance(term, str) or not term.strip():
+            continue
+        normalized = normalize_identifier(term)
+        sortable.append((normalized, term))
+
+    sortable.sort(key=lambda item: (item[0], item[1]))
+
+    term_ids: dict[str, str] = {}
+    for index, (normalized, term) in enumerate(sortable):
+        prefix = normalized[:6] if normalized else "term"
+        term_ids[term] = f"{prefix}_{_base36_encode(index, width)}"
+    return term_ids
 
 
 def load_snomed_terms(path: Path) -> list[str]:
@@ -443,12 +487,15 @@ def save_snomed(
     ranks: list[int],
     output_path: Path,
     merge_enabled: bool,
+    term_id_map: dict[str, str],
 ) -> None:
-    """Save final SNOMED entries with rank to JSONL."""
+    """Save final SNOMED entries with rank and term ID to JSONL."""
     with output_path.open("w", encoding="utf-8") as handle:
         for entry, rank in zip(ranked_entries, ranks):
+            term_id = term_id_map.get(entry["term"], "term_000")
             output_entry = {
                 "rank": rank,
+                "term_id": term_id,
                 "term": entry["term"],
                 "snomed_count": entry["snomed_count"],
                 "corpus_count": entry["corpus_count"],
@@ -550,7 +597,8 @@ def preprocess_snomed(
         ]
         ranked_entries = [entry for entry, _rank in capped]
         ranks = [rank for _entry, rank in capped]
-    save_snomed(ranked_entries, ranks, snomed_file, merge_variants)
+    term_id_map = build_term_id_map(ranked_entries)
+    save_snomed(ranked_entries, ranks, snomed_file, merge_variants, term_id_map)
 
     return {
         "phrases": phrases_file,
