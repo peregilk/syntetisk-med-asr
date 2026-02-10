@@ -7,7 +7,7 @@ from typing import Dict, List
 
 from tqdm import tqdm
 
-from prompt_creation.generate_outputs import generate_output
+from prompt_creation.generate_outputs import generate_outputs
 from prompt_creation.prompts import _generate_prompts
 from prompt_creation.prompts import _init_plan
 from prompt_creation.prompts import _read_jsonl
@@ -86,6 +86,10 @@ def _generate_outputs(
     prompt_file: Path,
     output_file: Path,
     overwrite: bool,
+    concurrency: int,
+    batch_size: int,
+    max_retries: int,
+    retry_backoff_s: float,
 ) -> None:
     if not prompt_file.exists():
         raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
@@ -97,17 +101,34 @@ def _generate_outputs(
     if not overwrite:
         prompts = [prompt for prompt in prompts if prompt["id"] not in existing_index]
 
-    for prompt in tqdm(prompts, desc="Generating", unit="prompt"):
-        existing_position = existing_index.get(prompt["id"])
-        content = generate_output(prompt["prompt"])
+    prompt_texts = [prompt["prompt"] for prompt in prompts]
+    prompt_ids = [prompt["id"] for prompt in prompts]
+
+    results = generate_outputs(
+        prompt_texts,
+        concurrency=concurrency,
+        batch_size=batch_size,
+        max_retries=max_retries,
+        retry_backoff_s=retry_backoff_s,
+    )
+
+    for prompt_id, prompt_text, result in tqdm(
+        zip(prompt_ids, prompt_texts, results),
+        desc="Writing",
+        unit="prompt",
+        total=len(results),
+    ):
+        existing_position = existing_index.get(prompt_id)
         entry = {
-            "id": prompt["id"],
-            "prompt": prompt["prompt"],
-            "response": content,
+            "id": prompt_id,
+            "prompt": prompt_text,
+            "response": result.content,
         }
+        if result.error:
+            entry["error"] = result.error
 
         if existing_position is None:
-            existing_index[prompt["id"]] = len(existing)
+            existing_index[prompt_id] = len(existing)
             existing.append(entry)
         else:
             existing[existing_position] = entry
@@ -171,6 +192,30 @@ def main() -> None:
         help="Overwrite existing entries with the same id.",
     )
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=50,
+        help="Maximum number of parallel model requests.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Number of prompts per batch for async generation.",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=2,
+        help="Number of retries per prompt on transient errors.",
+    )
+    parser.add_argument(
+        "--retry-backoff-s",
+        type=float,
+        default=0.5,
+        help="Base backoff in seconds for retries.",
+    )
+    parser.add_argument(
         "--init-plan",
         action="store_true",
         help="Rebuild the plan from the SNOMED file before looping.",
@@ -206,7 +251,15 @@ def main() -> None:
             args.optional_count,
             args.seed,
         )
-        _generate_outputs(args.prompt_file, args.output_file, args.overwrite)
+        _generate_outputs(
+            args.prompt_file,
+            args.output_file,
+            args.overwrite,
+            args.concurrency,
+            args.batch_size,
+            args.max_retries,
+            args.retry_backoff_s,
+        )
         _update_plan(args.plan_file, args.output_file, accumulate=False)
 
 
