@@ -51,7 +51,8 @@ uv run python prompt_creation/processing.py \
   --terms-file data/snomed_ct_norwegian_terms.jsonl \
   --preprocessed-dir data/preprocessed \
   --word-occurrence-dir data/word_occurences \
-  --rank-cap 10000
+  --rank-cap 10000 \
+  --max-corpus-count 99
 ```
 
 Viktig parameter:
@@ -70,7 +71,7 @@ uv run python main.py \
   --prompt-file prompts/generated_prompts.jsonl \
   --output-file data/outputs/output.jsonl \
   --target-count 100 \
-  --max-iterations 1000
+  --max-iterations 100  
 ```
 
 Viktige parametere:

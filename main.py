@@ -101,43 +101,48 @@ def _generate_outputs(
     if not overwrite:
         prompts = [prompt for prompt in prompts if prompt["id"] not in existing_index]
 
-    prompt_texts = [prompt["prompt"] for prompt in prompts]
-    prompt_ids = [prompt["id"] for prompt in prompts]
+    progress = tqdm(total=len(prompts), desc="Generating", unit="prompt")
+    try:
+        for start_index in range(0, len(prompts), batch_size):
+            batch = prompts[start_index : start_index + batch_size]
+            batch_prompt_texts = [prompt["prompt"] for prompt in batch]
+            batch_prompt_ids = [prompt["id"] for prompt in batch]
 
-    results = generate_outputs(
-        prompt_texts,
-        concurrency=concurrency,
-        batch_size=batch_size,
-        max_retries=max_retries,
-        retry_backoff_s=retry_backoff_s,
-    )
+            batch_results = generate_outputs(
+                batch_prompt_texts,
+                concurrency=concurrency,
+                batch_size=len(batch_prompt_texts),
+                max_retries=max_retries,
+                retry_backoff_s=retry_backoff_s,
+            )
 
-    for prompt_id, prompt_text, result in tqdm(
-        zip(prompt_ids, prompt_texts, results),
-        desc="Writing",
-        unit="prompt",
-        total=len(results),
-    ):
-        existing_position = existing_index.get(prompt_id)
-        entry = {
-            "id": prompt_id,
-            "prompt": prompt_text,
-            "response": result.content,
-        }
-        if result.error:
-            entry["error"] = result.error
+            for prompt_id, prompt_text, result in zip(
+                batch_prompt_ids, batch_prompt_texts, batch_results
+            ):
+                existing_position = existing_index.get(prompt_id)
+                entry = {
+                    "id": prompt_id,
+                    "prompt": prompt_text,
+                    "response": result.content,
+                }
+                if result.error:
+                    entry["error"] = result.error
 
-        if existing_position is None:
-            existing_index[prompt_id] = len(existing)
-            existing.append(entry)
-        else:
-            existing[existing_position] = entry
+                if existing_position is None:
+                    existing_index[prompt_id] = len(existing)
+                    existing.append(entry)
+                else:
+                    existing[existing_position] = entry
 
-        if overwrite:
-            write_output(output_file, existing)
-        else:
-            if existing_position is None:
-                append_output(output_file, entry)
+                if overwrite:
+                    write_output(output_file, existing)
+                else:
+                    if existing_position is None:
+                        append_output(output_file, entry)
+
+            progress.update(len(batch_results))
+    finally:
+        progress.close()
 
 
 def main() -> None:
