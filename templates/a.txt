@@ -7,7 +7,7 @@ Krav:
 - Naturlig flytende språk og egnet for TTS, uten parenteser eller spesialtegn.
 - Selve scnearioet skal aldri beskrives i output. Det er kun bakgrunnen for teksten.
 - Alt skal være skrevet på norsk.
-- Prøv å integrere følgende frase: "${snomed_required}".
+- Prøv å integrere følgende uttrykk: "${snomed_required}".
 - Du kan også bruke noen medisinske termer fra denne listen for å gjøre teksten mer variert og medisinsk relatert: "${snomed_optional}".
 
 Output:
