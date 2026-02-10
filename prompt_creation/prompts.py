@@ -283,12 +283,18 @@ def _generate_prompts(
 		required_expr = _choose_expression(term, usage, rng)
 
 		optional_terms: list[str] = []
-		for _ in range(optional_count):
-			# Optional expressions are drawn with replacement over all terms.
-			optional_entry = rng.choice(plan_entries)
+		candidate_entries = [
+			candidate
+			for candidate in plan_entries
+			if isinstance(candidate.get("term"), str) and candidate.get("term").strip()
+		]
+		max_optional = max(0, optional_count)
+		optional_sample = rng.sample(
+			candidate_entries,
+			k=min(max_optional, len(candidate_entries)),
+		)
+		for optional_entry in optional_sample:
 			opt_term = optional_entry.get("term")
-			if not isinstance(opt_term, str) or not opt_term.strip():
-				continue
 			opt_usage = (
 				optional_entry.get("usage")
 				if isinstance(optional_entry.get("usage"), list)
