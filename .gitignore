@@ -209,3 +209,6 @@ __marimo__/
 # Generated prompts
 prompts/*
 !prompts/.gitkeep
+
+# Audio files
+data/audio/*.mp3

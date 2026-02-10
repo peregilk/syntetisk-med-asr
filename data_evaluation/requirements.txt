@@ -1,0 +1,8 @@
+numpy
+pandas
+soundfile
+torchaudio
+torch
+git+https://github.com/sarulab-speech/UTMOSv2.git
+tabulate
+tqdm
