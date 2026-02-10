@@ -32,6 +32,14 @@ Etablere et stort, åpent norsk **medisinsk tale-til-tekst-treningssett** for å
 
 ## Bruk
 
+### Oversikt over datagenereringspipeline
+1) Preprosessering: SNOMED-termer og -uttrykk renses og rangeres til `data/preprocessed/snomed.jsonl`.
+2) Plan: `data/terms_to_use.jsonl` opprettes og styrer hvor mange ganger hvert begrep skal forekomme.
+3) Prompt-generering: `prompts/generated_prompts.jsonl` bygges fra planen + template.
+4) LLM-generering: hver prompt får et output i `data/outputs/output.jsonl`.
+5) Planoppdatering: brukt terminologi telles, `used_terms` lagres per output, og `target_remaining` justeres.
+6) Loop: steg 3–5 gjentas til alle termer når målet eller `--max-iterations` stopper kjøringen.
+
 ### 1) Preprosessering
 Kjør SNOMED-preprosessering for å lage filer i data/preprocessed/.
 Henter ut nøkkelbegreper fra SNOMED, samt uttrykk der de brukes.
