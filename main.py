@@ -1,16 +1,17 @@
-"""Generate synthetic responses from prompts using DeepSeek via DeepInfra."""
+"""Orchestrate prompt generation and LLM outputs for synthetic data."""
 
 import argparse
 import json
-import os
 from pathlib import Path
 from typing import Dict, List
 
-from openai import OpenAI
 from tqdm import tqdm
 
-MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
-DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai"
+from prompt_creation.generate_outputs import generate_output
+from prompt_creation.generate_prompts import _generate_prompts
+from prompt_creation.generate_prompts import _init_plan
+from prompt_creation.generate_prompts import _read_jsonl
+from prompt_creation.generate_prompts import _update_plan
 
 
 def load_prompts(prompt_file: Path) -> List[Dict[str, str]]:
@@ -70,52 +71,35 @@ def append_output(output_file: Path, entry: Dict[str, str]) -> None:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate synthetic responses from prompt JSONL files."
-    )
-    parser.add_argument(
-        "--prompt-file",
-        required=True,
-        help="Path to JSONL prompt file (id + prompt).",
-    )
-    parser.add_argument(
-        "--output-file",
-        default="data/outputs/output.jsonl",
-        help="Path to JSONL output file.",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing entries with the same id.",
-    )
-    args = parser.parse_args()
+def _plan_complete(plan_file: Path) -> bool:
+    plan_entries = _read_jsonl(plan_file)
+    if not plan_entries:
+        return False
+    for entry in plan_entries:
+        remaining = entry.get("target_remaining", 0)
+        if isinstance(remaining, int) and remaining > 0:
+            return False
+    return True
 
-    prompt_file = Path(args.prompt_file)
-    output_file = Path(args.output_file)
 
+def _generate_outputs(
+    prompt_file: Path,
+    output_file: Path,
+    overwrite: bool,
+) -> None:
     if not prompt_file.exists():
         raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
-
-    api_key = os.environ.get("DEEPINFRA_API_KEY")
-    if not api_key:
-        raise EnvironmentError("Missing DEEPINFRA_API_KEY environment variable")
-
-    client = OpenAI(api_key=api_key, base_url=DEEPINFRA_BASE_URL)
 
     prompts = load_prompts(prompt_file)
     existing = load_existing_output(output_file)
     existing_index = {entry.get("id"): idx for idx, entry in enumerate(existing)}
 
+    if not overwrite:
+        prompts = [prompt for prompt in prompts if prompt["id"] not in existing_index]
+
     for prompt in tqdm(prompts, desc="Generating", unit="prompt"):
         existing_position = existing_index.get(prompt["id"])
-        if existing_position is not None and not args.overwrite:
-            continue
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt["prompt"]}],
-        )
-        content = response.choices[0].message.content or ""
+        content = generate_output(prompt["prompt"])
         entry = {
             "id": prompt["id"],
             "prompt": prompt["prompt"],
@@ -128,11 +112,101 @@ def main() -> None:
         else:
             existing[existing_position] = entry
 
-        if args.overwrite:
+        if overwrite:
             write_output(output_file, existing)
         else:
             if existing_position is None:
                 append_output(output_file, entry)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Generate prompts and LLM outputs until target coverage is met."
+    )
+    parser.add_argument(
+        "--snomed-file",
+        type=Path,
+        default=Path("data/preprocessed/snomed.jsonl"),
+        help="Path to preprocessed SNOMED terms.",
+    )
+    parser.add_argument(
+        "--plan-file",
+        type=Path,
+        default=Path("data/terms_to_use.jsonl"),
+        help="Path to the term usage plan JSONL.",
+    )
+    parser.add_argument(
+        "--target-count",
+        type=int,
+        default=100,
+        help="Target total usage per term.",
+    )
+    parser.add_argument(
+        "--template",
+        type=Path,
+        default=Path("templates/a.txt"),
+        help="Prompt template file.",
+    )
+    parser.add_argument(
+        "--prompt-file",
+        type=Path,
+        default=Path("prompts/generated_prompts.jsonl"),
+        help="Prompt JSONL output file.",
+    )
+    parser.add_argument(
+        "--optional-count",
+        type=int,
+        default=10,
+        help="Number of optional terms per prompt.",
+    )
+    parser.add_argument(
+        "--output-file",
+        type=Path,
+        default=Path("data/outputs/output.jsonl"),
+        help="LLM output JSONL file.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing entries with the same id.",
+    )
+    parser.add_argument(
+        "--init-plan",
+        action="store_true",
+        help="Rebuild the plan from the SNOMED file before looping.",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=1000,
+        help="Safety limit for loop iterations.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for prompt generation.",
+    )
+    args = parser.parse_args()
+
+    if args.init_plan or not args.plan_file.exists():
+        _init_plan(args.snomed_file, args.plan_file, args.target_count)
+
+    if not args.overwrite and args.output_file.exists():
+        _update_plan(args.plan_file, args.output_file, accumulate=False)
+
+    for iteration in range(1, args.max_iterations + 1):
+        if _plan_complete(args.plan_file):
+            break
+        _generate_prompts(
+            args.plan_file,
+            args.template,
+            args.prompt_file,
+            args.optional_count,
+            args.seed,
+        )
+        _generate_outputs(args.prompt_file, args.output_file, args.overwrite)
+        _update_plan(args.plan_file, args.output_file, accumulate=False)
 
 
 if __name__ == "__main__":
