@@ -106,8 +106,10 @@ def _match_term_token(
 	return None
 
 
-def _count_used_terms(texts: Iterable[str], plan_entries: list[dict]) -> dict[str, int]:
-	"""Count usage of plan terms in the generated outputs."""
+def _prepare_term_matcher(
+	plan_entries: list[dict],
+) -> tuple[set[str], dict[str, str], object]:
+	"""Prepare term set and normalization map for matching."""
 	term_set = {entry["term"] for entry in plan_entries}
 	corpus_counts = {entry["term"]: entry.get("corpus_count", 0) for entry in plan_entries}
 	# Reuse processing.py variant normalization to match inflected forms.
@@ -127,7 +129,16 @@ def _count_used_terms(texts: Iterable[str], plan_entries: list[dict]) -> dict[st
 			)
 			continue
 		normalized_to_term[normalized] = term
+	return term_set, normalized_to_term, stemmer
 
+
+def _count_terms_in_texts(
+	texts: Iterable[str],
+	term_set: set[str],
+	normalized_to_term: dict[str, str],
+	stemmer,
+) -> dict[str, int]:
+	"""Count term usage across a collection of texts."""
 	counts: dict[str, int] = defaultdict(int)
 	for text in texts:
 		for token, sentence_start in _iter_sentence_tokens(text):
@@ -141,6 +152,36 @@ def _count_used_terms(texts: Iterable[str], plan_entries: list[dict]) -> dict[st
 			if matched is not None:
 				counts[matched] += 1
 	return dict(counts)
+
+
+def _list_used_terms(
+	text: str,
+	term_set: set[str],
+	normalized_to_term: dict[str, str],
+	stemmer,
+) -> list[str]:
+	"""List unique matched terms in order of appearance for a text."""
+	used_terms: list[str] = []
+	seen_terms: set[str] = set()
+	for token, sentence_start in _iter_sentence_tokens(text):
+		matched = _match_term_token(
+			token,
+			sentence_start,
+			term_set,
+			normalized_to_term,
+			stemmer,
+		)
+		if matched is None or matched in seen_terms:
+			continue
+		seen_terms.add(matched)
+		used_terms.append(matched)
+	return used_terms
+
+
+def _count_used_terms(texts: Iterable[str], plan_entries: list[dict]) -> dict[str, int]:
+	"""Count usage of plan terms in the generated outputs."""
+	term_set, normalized_to_term, stemmer = _prepare_term_matcher(plan_entries)
+	return _count_terms_in_texts(texts, term_set, normalized_to_term, stemmer)
 
 
 def _init_plan(
@@ -158,8 +199,6 @@ def _init_plan(
 		term_id = entry.get("term_id")
 		if not isinstance(term_id, str) or not term_id.strip():
 			term_id = f"term_{len(plan_entries) + 1:04d}"
-		# Keep usage list for 50/50 selection later.
-		usage = entry.get("usage") if isinstance(entry.get("usage"), list) else []
 		corpus_count = entry.get("corpus_count", 0)
 		if not isinstance(corpus_count, int):
 			corpus_count = 0
@@ -174,7 +213,6 @@ def _init_plan(
 				"used_in_output": 0,
 				"prompt_counter": 0,
 				"target_remaining": target_remaining,
-				"usage": usage,
 			}
 		)
 
@@ -194,9 +232,21 @@ def _update_plan(
 		raise FileNotFoundError(f"No plan entries found in {plan_file}")
 
 	output_records = _read_jsonl(output_file)
+	term_set, normalized_to_term, stemmer = _prepare_term_matcher(plan_entries)
 	# Extract text from output records using known response formats.
 	texts = [text for record in output_records if (text := _extract_text_from_output(record))]
-	used_counts = _count_used_terms(texts, plan_entries)
+	used_counts = _count_terms_in_texts(texts, term_set, normalized_to_term, stemmer)
+	for record in output_records:
+		text = _extract_text_from_output(record)
+		if not text:
+			record["used_terms"] = []
+			continue
+		record["used_terms"] = _list_used_terms(
+			text,
+			term_set,
+			normalized_to_term,
+			stemmer,
+		)
 
 	for entry in plan_entries:
 		term = entry.get("term")
@@ -222,6 +272,7 @@ def _update_plan(
 
 	plan_entries.sort(key=lambda item: (item["target_remaining"], item["term"]))
 	_write_jsonl(plan_file, plan_entries)
+	_write_jsonl(output_file, output_records)
 
 
 def _choose_expression(term: str, usage: list[str], rng: random.Random) -> str:
@@ -231,8 +282,21 @@ def _choose_expression(term: str, usage: list[str], rng: random.Random) -> str:
 	return term
 
 
+def _load_usage_map(snomed_file: Path) -> dict[str, list[str]]:
+	"""Load usage lists from SNOMED JSONL keyed by term."""
+	usage_map: dict[str, list[str]] = {}
+	for entry in _read_jsonl(snomed_file):
+		term = entry.get("term")
+		if not isinstance(term, str) or not term.strip():
+			continue
+		usage = entry.get("usage") if isinstance(entry.get("usage"), list) else []
+		usage_map[term] = [item for item in usage if isinstance(item, str)]
+	return usage_map
+
+
 def _generate_prompts(
 	plan_file: Path,
+	snomed_file: Path,
 	template_file: Path,
 	output_file: Path,
 	optional_count: int,
@@ -242,6 +306,7 @@ def _generate_prompts(
 	plan_entries = _read_jsonl(plan_file)
 	if not plan_entries:
 		raise FileNotFoundError(f"No plan entries found in {plan_file}")
+	usage_map = _load_usage_map(snomed_file)
 
 	# Build counters from existing output to avoid reusing IDs.
 	existing_prompts = _read_jsonl(output_file)
@@ -278,7 +343,7 @@ def _generate_prompts(
 			prompt_counter = 0
 		prompt_counter += 1
 		entry["prompt_counter"] = prompt_counter
-		usage = entry.get("usage") if isinstance(entry.get("usage"), list) else []
+		usage = usage_map.get(term, [])
 		# Required expression uses the same 50/50 rule as optional expressions.
 		required_expr = _choose_expression(term, usage, rng)
 
@@ -295,11 +360,7 @@ def _generate_prompts(
 		)
 		for optional_entry in optional_sample:
 			opt_term = optional_entry.get("term")
-			opt_usage = (
-				optional_entry.get("usage")
-				if isinstance(optional_entry.get("usage"), list)
-				else []
-			)
+			opt_usage = usage_map.get(opt_term, [])
 			optional_terms.append(_choose_expression(opt_term, opt_usage, rng))
 
 		prompt_text = template.substitute(

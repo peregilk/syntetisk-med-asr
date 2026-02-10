@@ -115,6 +115,7 @@ def main() -> None:
 	if args.command == "generate":
 		_generate_prompts(
 			args.plan_file,
+			args.snomed_file,
 			args.template,
 			args.output_file,
 			args.optional_count,
