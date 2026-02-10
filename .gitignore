@@ -214,6 +214,10 @@ prompts/*
 .DS_Store
 
 # Directories
+notebooks
 data/preprocessed/occurences.jsonl
 data/preprocessed/snomed_phrases.jsonl
 data/preprocessed/snomed_terms.jsonl
+data/outputs/*
+data/terms_to_use.jsonl
+
