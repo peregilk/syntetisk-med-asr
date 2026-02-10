@@ -18,8 +18,8 @@ import json
 import random
 from pathlib import Path
 
-from processing import load_snomed_terms as _load_snomed_terms
-from processing import preprocess_snomed as _preprocess_snomed
+from prompt_creation.processing import load_snomed_terms as _load_snomed_terms
+from prompt_creation.processing import preprocess_snomed as _preprocess_snomed
 
 # Load terms when module is imported
 _script_dir = Path(__file__).parent
