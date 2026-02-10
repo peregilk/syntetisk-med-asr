@@ -8,10 +8,10 @@ from typing import Dict, List
 from tqdm import tqdm
 
 from prompt_creation.generate_outputs import generate_output
-from prompt_creation.generate_prompts import _generate_prompts
-from prompt_creation.generate_prompts import _init_plan
-from prompt_creation.generate_prompts import _read_jsonl
-from prompt_creation.generate_prompts import _update_plan
+from prompt_creation.prompts import _generate_prompts
+from prompt_creation.prompts import _init_plan
+from prompt_creation.prompts import _read_jsonl
+from prompt_creation.prompts import _update_plan
 
 
 def load_prompts(prompt_file: Path) -> List[Dict[str, str]]:
@@ -200,6 +200,7 @@ def main() -> None:
             break
         _generate_prompts(
             args.plan_file,
+            args.snomed_file,
             args.template,
             args.prompt_file,
             args.optional_count,
