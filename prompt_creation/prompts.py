@@ -217,7 +217,10 @@ def _init_plan(
 		)
 
 	# Sort by remaining counts to prioritize under-covered terms.
-	plan_entries.sort(key=lambda item: (item["target_remaining"], item["term"]))
+	plan_entries.sort(
+		key=lambda item: (item["target_remaining"], item["term"]),
+		reverse=True,
+	)
 	_write_jsonl(plan_file, plan_entries)
 
 
@@ -351,7 +354,10 @@ def _generate_prompts(
 		candidate_entries = [
 			candidate
 			for candidate in plan_entries
-			if isinstance(candidate.get("term"), str) and candidate.get("term").strip()
+			if isinstance(candidate.get("term"), str)
+			and candidate.get("term").strip()
+			and isinstance(candidate.get("target_remaining"), int)
+			and candidate.get("target_remaining") > 0
 		]
 		max_optional = max(0, optional_count)
 		optional_sample = rng.sample(
