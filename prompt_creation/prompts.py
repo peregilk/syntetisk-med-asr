@@ -86,20 +86,20 @@ def _is_titlecase_word(token: str) -> bool:
 def _match_term_token(
 	token: str,
 	sentence_start: bool,
-	term_set: set[str],
+	variant_to_term: dict[str, str],
 	normalized_to_term: dict[str, str],
 	stemmer,
 ) -> str | None:
 	"""Match a token to a plan term with strict casing + sentence-start exception."""
-	if token in term_set:
-		return token
+	if token in variant_to_term:
+		return variant_to_term[token]
 
 	allow_casefold = False
 	if sentence_start and _is_titlecase_word(token):
 		lowered = token.lower()
 		allow_casefold = True
-		if lowered in term_set:
-			return lowered
+		if lowered in variant_to_term:
+			return variant_to_term[lowered]
 	if token.islower() or allow_casefold:
 		normalized = _normalize_term(token.lower() if allow_casefold else token, stemmer)
 		return normalized_to_term.get(normalized)
@@ -108,19 +108,43 @@ def _match_term_token(
 
 def _prepare_term_matcher(
 	plan_entries: list[dict],
-) -> tuple[set[str], dict[str, str], object]:
-	"""Prepare term set and normalization map for matching."""
-	term_set = {entry["term"] for entry in plan_entries}
-	corpus_counts = {entry["term"]: entry.get("corpus_count", 0) for entry in plan_entries}
+) -> tuple[dict[str, str], dict[str, str], object]:
+	"""Prepare variant lookup and normalization map for matching."""
+	term_set = {entry["term"] for entry in plan_entries if isinstance(entry.get("term"), str)}
+	corpus_counts = {
+		entry["term"]: entry.get("corpus_count", 0)
+		for entry in plan_entries
+		if isinstance(entry.get("term"), str)
+	}
 	# Reuse processing.py variant normalization to match inflected forms.
 	stemmer, _variant_map, _normalized_term_set, _merged_counts = build_variant_maps(
 		term_set,
 		corpus_counts,
 		merge_enabled=True,
 	)
+	variant_to_term: dict[str, str] = {}
+	for entry in plan_entries:
+		term = entry.get("term")
+		if not isinstance(term, str) or not term.strip():
+			continue
+		variant_to_term[term] = term
+		variants = entry.get("variants")
+		if isinstance(variants, list):
+			for variant in variants:
+				if not isinstance(variant, str) or not variant.strip():
+					continue
+				existing = variant_to_term.get(variant)
+				if existing and existing != term:
+					print(
+						"Warning: variant assigned to multiple terms:"
+						f" {variant} -> {existing} / {term}",
+					)
+					continue
+				variant_to_term[variant] = term
+
 	normalized_to_term: dict[str, str] = {}
-	for term in term_set:
-		normalized = _normalize_term(term, stemmer)
+	for variant, term in variant_to_term.items():
+		normalized = _normalize_term(variant, stemmer)
 		if normalized in normalized_to_term and normalized_to_term[normalized] != term:
 			existing = normalized_to_term[normalized]
 			print(
@@ -129,12 +153,12 @@ def _prepare_term_matcher(
 			)
 			continue
 		normalized_to_term[normalized] = term
-	return term_set, normalized_to_term, stemmer
+	return variant_to_term, normalized_to_term, stemmer
 
 
 def _count_terms_in_texts(
 	texts: Iterable[str],
-	term_set: set[str],
+	variant_to_term: dict[str, str],
 	normalized_to_term: dict[str, str],
 	stemmer,
 ) -> dict[str, int]:
@@ -145,7 +169,7 @@ def _count_terms_in_texts(
 			matched = _match_term_token(
 				token,
 				sentence_start,
-				term_set,
+				variant_to_term,
 				normalized_to_term,
 				stemmer,
 			)
@@ -156,7 +180,7 @@ def _count_terms_in_texts(
 
 def _list_used_terms(
 	text: str,
-	term_set: set[str],
+	variant_to_term: dict[str, str],
 	normalized_to_term: dict[str, str],
 	stemmer,
 ) -> list[str]:
@@ -167,7 +191,7 @@ def _list_used_terms(
 		matched = _match_term_token(
 			token,
 			sentence_start,
-			term_set,
+			variant_to_term,
 			normalized_to_term,
 			stemmer,
 		)
@@ -180,8 +204,8 @@ def _list_used_terms(
 
 def _count_used_terms(texts: Iterable[str], plan_entries: list[dict]) -> dict[str, int]:
 	"""Count usage of plan terms in the generated outputs."""
-	term_set, normalized_to_term, stemmer = _prepare_term_matcher(plan_entries)
-	return _count_terms_in_texts(texts, term_set, normalized_to_term, stemmer)
+	variant_to_term, normalized_to_term, stemmer = _prepare_term_matcher(plan_entries)
+	return _count_terms_in_texts(texts, variant_to_term, normalized_to_term, stemmer)
 
 
 def _init_plan(
@@ -202,6 +226,8 @@ def _init_plan(
 		corpus_count = entry.get("corpus_count", 0)
 		if not isinstance(corpus_count, int):
 			corpus_count = 0
+		variants = entry.get("variants") if isinstance(entry.get("variants"), list) else []
+		variants = [item for item in variants if isinstance(item, str) and item.strip()]
 		# Remaining count is based on static corpus baseline.
 		target_remaining = max(0, target_count - corpus_count)
 		plan_entries.append(
@@ -213,6 +239,7 @@ def _init_plan(
 				"used_in_output": 0,
 				"prompt_counter": 0,
 				"target_remaining": target_remaining,
+				"variants": variants,
 			}
 		)
 
@@ -235,10 +262,10 @@ def _update_plan(
 		raise FileNotFoundError(f"No plan entries found in {plan_file}")
 
 	output_records = _read_jsonl(output_file)
-	term_set, normalized_to_term, stemmer = _prepare_term_matcher(plan_entries)
+	variant_to_term, normalized_to_term, stemmer = _prepare_term_matcher(plan_entries)
 	# Extract text from output records using known response formats.
 	texts = [text for record in output_records if (text := _extract_text_from_output(record))]
-	used_counts = _count_terms_in_texts(texts, term_set, normalized_to_term, stemmer)
+	used_counts = _count_terms_in_texts(texts, variant_to_term, normalized_to_term, stemmer)
 	for record in output_records:
 		text = _extract_text_from_output(record)
 		if not text:
@@ -246,7 +273,7 @@ def _update_plan(
 			continue
 		record["used_terms"] = _list_used_terms(
 			text,
-			term_set,
+			variant_to_term,
 			normalized_to_term,
 			stemmer,
 		)
