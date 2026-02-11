@@ -71,12 +71,14 @@ uv run python main.py \
   --prompt-file prompts/generated_prompts.jsonl \
   --output-file data/outputs/output.jsonl \
   --target-count 100 \
-  --max-iterations 100  
+  --max-iterations 100 \
+  --reasoning-effort low 
 ```
 
 Viktige parametere:
 - `--target-count`: bestemmer hvor mange ganger hver term totalt skal forekomme.
-- `--max-iterations`: sikkerhetsgrense for hvor mange runder pipelinen skal kjøre.
+- `--max-iterations`: sikkerhetsgrense for hvor mange runder pipelinen skal kjøre. `--max-iterations 1` gir git en output per begrep.
+- `--reasoning-effort`: chain-of-thought test-time compute budsjett. `low` gir flere brukte begreper per output enn `none`. `medium` og `high` ga ikke merkbart forbedring.
 
 #### Generer plan manuelt
 En datagenereringsplan lages automatisk i pipelinen, men kan også lages manuelt.
