@@ -82,6 +82,17 @@ def _plan_complete(plan_file: Path) -> bool:
     return True
 
 
+def _has_pending_prompts(prompt_file: Path, output_file: Path) -> bool:
+    if not prompt_file.exists():
+        return False
+    prompts = load_prompts(prompt_file)
+    if not prompts:
+        return False
+    output_records = load_existing_output(output_file)
+    output_ids = {record.get("id") for record in output_records}
+    return any(prompt["id"] not in output_ids for prompt in prompts)
+
+
 def _generate_outputs(
     prompt_file: Path,
     output_file: Path,
@@ -90,6 +101,7 @@ def _generate_outputs(
     batch_size: int,
     max_retries: int,
     retry_backoff_s: float,
+    reasoning_effort: str,
 ) -> None:
     if not prompt_file.exists():
         raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
@@ -114,6 +126,7 @@ def _generate_outputs(
                 batch_size=len(batch_prompt_texts),
                 max_retries=max_retries,
                 retry_backoff_s=retry_backoff_s,
+                reasoning_effort=reasoning_effort,
             )
 
             for prompt_id, prompt_text, result in zip(
@@ -237,6 +250,15 @@ def main() -> None:
         default=None,
         help="Random seed for prompt generation.",
     )
+
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default="none",
+        choices=["low", "medium", "high", "none"],
+        help="Reasoning effort for LLM generation (low, medium, high, or none).",
+    )
+
     args = parser.parse_args()
 
     if args.init_plan or not args.plan_file.exists():
@@ -248,14 +270,15 @@ def main() -> None:
     for iteration in range(1, args.max_iterations + 1):
         if _plan_complete(args.plan_file):
             break
-        _generate_prompts(
-            args.plan_file,
-            args.snomed_file,
-            args.template,
-            args.prompt_file,
-            args.optional_count,
-            args.seed,
-        )
+        if not _has_pending_prompts(args.prompt_file, args.output_file):
+            _generate_prompts(
+                args.plan_file,
+                args.snomed_file,
+                args.template,
+                args.prompt_file,
+                args.optional_count,
+                args.seed,
+            )
         _generate_outputs(
             args.prompt_file,
             args.output_file,
@@ -264,6 +287,7 @@ def main() -> None:
             args.batch_size,
             args.max_retries,
             args.retry_backoff_s,
+            args.reasoning_effort,
         )
         _update_plan(args.plan_file, args.output_file, accumulate=False)
 

@@ -29,7 +29,9 @@ def _resolve_api_key(api_key: Optional[str]) -> str:
     return resolved_key
 
 
-def generate_output(prompt: str, api_key: Optional[str] = None) -> str:
+def generate_output(
+    prompt: str, api_key: Optional[str] = None, reasoning_effort: str = "none"
+) -> str:
     """Generate a response for a single prompt.
 
     Args:
@@ -44,7 +46,7 @@ def generate_output(prompt: str, api_key: Optional[str] = None) -> str:
     client = OpenAI(api_key=resolved_key, base_url=DEEPINFRA_BASE_URL)
     response = client.chat.completions.create(
         model=MODEL_NAME,
-        reasoning_effort="none",  # low, medium, high, or none
+        reasoning_effort=reasoning_effort,  # low, medium, high, or none
         messages=[{"role": "user", "content": prompt}],
     )
     return response.choices[0].message.content or ""
@@ -56,6 +58,7 @@ async def _generate_one(
     semaphore: asyncio.Semaphore,
     max_retries: int,
     retry_backoff_s: float,
+    reasoning_effort: str,
 ) -> GenerationResult:
     """Generate a response for a single prompt with retries."""
     async with semaphore:
@@ -63,7 +66,7 @@ async def _generate_one(
             try:
                 response = await client.chat.completions.create(
                     model=MODEL_NAME,
-                    reasoning_effort="none",  # low, medium, high, or none
+                    reasoning_effort=reasoning_effort,  # low, medium, high, or none
                     messages=[{"role": "user", "content": prompt}],
                 )
                 content = response.choices[0].message.content or ""
@@ -82,6 +85,7 @@ async def generate_outputs_async(
     max_retries: int = 2,
     retry_backoff_s: float = 0.5,
     batch_size: int = 100,
+    reasoning_effort: str = "none",
     on_batch_complete: Optional[Callable[[list[GenerationResult]], Awaitable[None]]] = None,
 ) -> list[GenerationResult]:
     """Generate outputs for many prompts concurrently.
@@ -97,6 +101,7 @@ async def generate_outputs_async(
         max_retries: Number of retry attempts per prompt.
         retry_backoff_s: Base backoff (seconds) for retries.
         batch_size: Number of prompts per batch before touching base.
+        reasoning_effort: Reasoning effort for generation (low, medium, high, none).
         on_batch_complete: Async callback called after each batch completes.
 
     Returns:
@@ -117,6 +122,7 @@ async def generate_outputs_async(
                     semaphore=semaphore,
                     max_retries=max_retries,
                     retry_backoff_s=retry_backoff_s,
+                    reasoning_effort=reasoning_effort,
                 )
                 for prompt in batch_prompts
             ]
@@ -135,6 +141,7 @@ def generate_outputs(
     max_retries: int = 2,
     retry_backoff_s: float = 0.5,
     batch_size: int = 100,
+    reasoning_effort: str = "none",
     on_batch_complete: Optional[Callable[[list[GenerationResult]], Awaitable[None]]] = None,
 ) -> list[GenerationResult]:
     """Synchronous wrapper for generate_outputs_async()."""
@@ -146,6 +153,7 @@ def generate_outputs(
             max_retries=max_retries,
             retry_backoff_s=retry_backoff_s,
             batch_size=batch_size,
+            reasoning_effort=reasoning_effort,
             on_batch_complete=on_batch_complete,
         )
     )
