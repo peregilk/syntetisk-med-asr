@@ -331,6 +331,7 @@ def _generate_prompts(
 	output_file: Path,
 	optional_count: int,
 	seed: int | None,
+	generate_all: bool = False,
 ) -> None:
 	"""Generate prompts using required + optional term expressions."""
 	plan_entries = _read_jsonl(plan_file)
@@ -371,43 +372,45 @@ def _generate_prompts(
 		prompt_counter = max_counters.get(term_id, entry.get("prompt_counter", 0))
 		if not isinstance(prompt_counter, int) or prompt_counter < 0:
 			prompt_counter = 0
-		prompt_counter += 1
-		entry["prompt_counter"] = prompt_counter
 		usage = usage_map.get(term, [])
-		# Required expression uses the same 50/50 rule as optional expressions.
-		required_expr = _choose_expression(term, usage, rng)
+		prompt_total = target_remaining if generate_all else 1
+		for _ in range(prompt_total):
+			prompt_counter += 1
+			entry["prompt_counter"] = prompt_counter
+			# Required expression uses the same 50/50 rule as optional expressions.
+			required_expr = _choose_expression(term, usage, rng)
 
-		optional_terms: list[str] = []
-		candidate_entries = [
-			candidate
-			for candidate in plan_entries
-			if isinstance(candidate.get("term"), str)
-			and candidate.get("term").strip()
-			and isinstance(candidate.get("target_remaining"), int)
-			and candidate.get("target_remaining") > 0
-		]
-		max_optional = max(0, optional_count)
-		optional_sample = rng.sample(
-			candidate_entries,
-			k=min(max_optional, len(candidate_entries)),
-		)
-		for optional_entry in optional_sample:
-			opt_term = optional_entry.get("term")
-			opt_usage = usage_map.get(opt_term, [])
-			optional_terms.append(_choose_expression(opt_term, opt_usage, rng))
+			optional_terms: list[str] = []
+			candidate_entries = [
+				candidate
+				for candidate in plan_entries
+				if isinstance(candidate.get("term"), str)
+				and candidate.get("term").strip()
+				and isinstance(candidate.get("target_remaining"), int)
+				and candidate.get("target_remaining") > 0
+			]
+			max_optional = max(0, optional_count)
+			optional_sample = rng.sample(
+				candidate_entries,
+				k=min(max_optional, len(candidate_entries)),
+			)
+			for optional_entry in optional_sample:
+				opt_term = optional_entry.get("term")
+				opt_usage = usage_map.get(opt_term, [])
+				optional_terms.append(_choose_expression(opt_term, opt_usage, rng))
 
-		prompt_text = template.substitute(
-			scenario=get_random_scenario(),
-			snomed_required=required_expr,
-			snomed_optional=", ".join(optional_terms),
-		)
-		prompts.append(
-			{
-				"id": f"{term_id}_{prompt_counter:03d}",
-				"template": template_file.name,
-				"prompt": prompt_text,
-			}
-		)
+			prompt_text = template.substitute(
+				scenario=get_random_scenario(),
+				snomed_required=required_expr,
+				snomed_optional=", ".join(optional_terms),
+			)
+			prompts.append(
+				{
+					"id": f"{term_id}_{prompt_counter:03d}",
+					"template": template_file.name,
+					"prompt": prompt_text,
+				}
+			)
 
 	if prompts:
 		with output_file.open("a", encoding="utf-8") as handle:

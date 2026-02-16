@@ -59,8 +59,8 @@ Viktig parameter:
 - `--rank-cap`: angir *omtrent* hvor mange SNOMED-termer som tas med (mest relevante først). Lavere verdi gir mindre datasett og raskere kjøring.
 
 
-### 2) Kjør hele pipelinen
-Kjører prompt-generering, LLM-generering og planoppdatering i en loop til mål er nådd.
+### 2a) Kjør hele pipelinen
+Kjører prompt-generering, LLM-generering og planoppdatering i en loop til ønsket antall begrepsbruk er nådd.
 
 ```bash
 uv run python main.py \
@@ -78,22 +78,47 @@ uv run python main.py \
 Viktige parametere:
 - `--target-count`: bestemmer hvor mange ganger hver term totalt skal forekomme.
 - `--max-iterations`: sikkerhetsgrense for hvor mange runder pipelinen skal kjøre. `--max-iterations 1` gir git en output per begrep.
-- `--reasoning-effort`: chain-of-thought test-time compute budsjett. `low` gir flere brukte begreper per output enn `none`. `medium` og `high` ga ikke merkbart forbedring.
+- `--reasoning-effort`: chain-of-thought test-time compute budsjett. `low` gir flere brukte begreper per output enn `none` (6.1 vs 4.5). `medium` og `high` ga ikke merkbart økning.
 
-#### Generer plan manuelt
-En datagenereringsplan lages automatisk i pipelinen, men kan også lages manuelt.
+### 2b) Generer alle prompts i én kjøring
+For å generere alle prompts uten iterativ løkke må vi
+1. Lage en datagenereringsplan i `data/terms_to_use.jsonl` som styrer hvor mange ganger hvert begrep skal brukes.
+2. Estimere antall nødvendige prompts og generere dem. 
+   - Estimatet skrives til `target_remaining` i `data/terms_to_use.jsonl`.
+   - Generere prompts basert på oppdatert plan.
 
-Planen lagres i data/terms_to_use.jsonl og brukes til å styre hvor mange ganger hvert begrep skal forekomme.
-
+#### Generere plan
 ```bash
+# 1. Initialize plan
 uv run python generate_prompts.py init-plan \
-  --snomed-file data/preprocessed/snomed.jsonl \
   --plan-file data/terms_to_use.jsonl \
+  --snomed-file data/preprocessed/snomed.jsonl \
   --target-count 100
+
 ```
 
 Viktig parameter:
 - `--target-count`: ønsket total forekomst per term (inkludert corpus og genererte outputs).
+
+#### Generere prompts
+
+```bash
+# 2. Generate all prompts
+uv run python generate_prompts.py generate \
+  --plan-file data/terms_to_use.jsonl \
+  --snomed-file data/preprocessed/snomed.jsonl \
+  --template templates/a.txt \
+  --output-file prompts/generated_prompts.jsonl \
+  --optional-count 10 \
+  --reasoning-effort low \
+  --target-count 100 \
+  --generate-all
+```
+
+Viktige parametere:
+- `--reasoning-effort`: styrer estimatet. `none` antar 4.5 termer per output,
+  alle andre verdier bruker 6.1 (gjennomsnittsverdier fra DeepSeek V3.2 ved 10 optionals).
+- `--optional-count`: skalerer estimatet lineært i forhold til 10 optionals.
 
 
 ## Arbeidspakkeplan
