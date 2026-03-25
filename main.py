@@ -8,6 +8,8 @@ from typing import Dict, List
 from tqdm import tqdm
 
 from prompt_creation.generate_outputs import generate_outputs
+from prompt_creation.output_filter import FilterConfig
+from prompt_creation.output_filter import filter_jsonl_file
 from prompt_creation.prompts import _generate_prompts
 from prompt_creation.prompts import _init_plan
 from prompt_creation.prompts import _read_jsonl
@@ -31,7 +33,16 @@ def load_prompts(prompt_file: Path) -> List[Dict[str, str]]:
                 raise ValueError(
                     f"Missing 'id' or 'prompt' on line {line_number} in {prompt_file}"
                 )
-            prompts.append({"id": payload["id"], "prompt": payload["prompt"]})
+            template = payload.get("template")
+            if not isinstance(template, str):
+                template = ""
+            prompts.append(
+                {
+                    "id": payload["id"],
+                    "template": template,
+                    "prompt": payload["prompt"],
+                }
+            )
     return prompts
 
 
@@ -119,6 +130,7 @@ def _generate_outputs(
             batch = prompts[start_index : start_index + batch_size]
             batch_prompt_texts = [prompt["prompt"] for prompt in batch]
             batch_prompt_ids = [prompt["id"] for prompt in batch]
+            batch_prompt_templates = [prompt["template"] for prompt in batch]
 
             batch_results = generate_outputs(
                 batch_prompt_texts,
@@ -129,17 +141,16 @@ def _generate_outputs(
                 reasoning_effort=reasoning_effort,
             )
 
-            for prompt_id, prompt_text, result in zip(
-                batch_prompt_ids, batch_prompt_texts, batch_results
+            for prompt_id, prompt_template, prompt_text, result in zip(
+                batch_prompt_ids, batch_prompt_templates, batch_prompt_texts, batch_results
             ):
                 existing_position = existing_index.get(prompt_id)
                 entry = {
                     "id": prompt_id,
+                    "template": prompt_template,
                     "prompt": prompt_text,
-                    "response": result.content,
+                    "result": result.content,
                 }
-                if result.error:
-                    entry["error"] = result.error
 
                 if existing_position is None:
                     existing_index[prompt_id] = len(existing)
@@ -156,6 +167,42 @@ def _generate_outputs(
             progress.update(len(batch_results))
     finally:
         progress.close()
+
+
+def _filter_outputs(
+    output_file: Path,
+    min_used_terms: int,
+    min_chars: int,
+    max_chars: int,
+    rejected_output_file: Path | None,
+) -> None:
+    """Filter the output file in place after used_terms have been evaluated."""
+    temp_filtered_file = output_file.with_suffix(output_file.suffix + ".filtered.tmp")
+    if temp_filtered_file.exists():
+        temp_filtered_file.unlink()
+
+    summary = filter_jsonl_file(
+        input_file=output_file,
+        output_file=temp_filtered_file,
+        config=FilterConfig(
+            min_used_terms=min_used_terms,
+            min_chars=min_chars,
+            max_chars=max_chars,
+        ),
+        rejected_file=rejected_output_file,
+        overwrite=True,
+    )
+
+    temp_filtered_file.replace(output_file)
+
+    print("Filter summary:")
+    print(f"  processed={summary['processed']}")
+    print(f"  accepted={summary['accepted']}")
+    print(f"  rejected={summary['rejected']}")
+    reasons = summary.get("reasons", {})
+    if reasons:
+        for reason, count in sorted(reasons.items()):
+            print(f"  - {reason}: {count}")
 
 
 def main() -> None:
@@ -258,6 +305,35 @@ def main() -> None:
         choices=["low", "medium", "high", "none"],
         help="Reasoning effort for LLM generation (low, medium, high, or none).",
     )
+    parser.add_argument(
+        "--disable-output-filter",
+        action="store_true",
+        help="Disable output filtering before writing generated records.",
+    )
+    parser.add_argument(
+        "--filter-min-used-terms",
+        type=int,
+        default=4,
+        help="Minimum used terms required for generated records.",
+    )
+    parser.add_argument(
+        "--filter-min-chars",
+        type=int,
+        default=400,
+        help="Minimum text length for generated records.",
+    )
+    parser.add_argument(
+        "--filter-max-chars",
+        type=int,
+        default=600,
+        help="Maximum text length for generated records.",
+    )
+    parser.add_argument(
+        "--rejected-output-file",
+        type=Path,
+        default=None,
+        help="Optional JSONL file to store rejected generated records with reason.",
+    )
 
     args = parser.parse_args()
 
@@ -290,6 +366,15 @@ def main() -> None:
             args.reasoning_effort,
         )
         _update_plan(args.plan_file, args.output_file, accumulate=False)
+        if not args.disable_output_filter:
+            _filter_outputs(
+                args.output_file,
+                args.filter_min_used_terms,
+                args.filter_min_chars,
+                args.filter_max_chars,
+                args.rejected_output_file,
+            )
+            _update_plan(args.plan_file, args.output_file, accumulate=False)
 
 
 if __name__ == "__main__":

@@ -224,3 +224,5 @@ data/terms_to_use.jsonl
 
 # Audio files
 data/audio/*.mp3
+
+.vscode/
