@@ -7,6 +7,13 @@ from typing import Dict, List
 
 from tqdm import tqdm
 
+from prompt_creation.chunked_jsonl import append_jsonl_record
+from prompt_creation.chunked_jsonl import iter_jsonl_lines
+from prompt_creation.chunked_jsonl import make_temp_target
+from prompt_creation.chunked_jsonl import read_jsonl
+from prompt_creation.chunked_jsonl import remove_jsonl_target
+from prompt_creation.chunked_jsonl import replace_jsonl_target
+from prompt_creation.chunked_jsonl import write_jsonl
 from prompt_creation.generate_outputs import generate_outputs
 from prompt_creation.output_filter import FilterConfig
 from prompt_creation.output_filter import filter_jsonl_file
@@ -18,68 +25,59 @@ from prompt_creation.prompts import _update_plan
 
 def load_prompts(prompt_file: Path) -> List[Dict[str, str]]:
     prompts: List[Dict[str, str]] = []
-    with prompt_file.open("r", encoding="utf-8") as handle:
-        for line_number, raw_line in enumerate(handle, start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Invalid JSON on line {line_number} in {prompt_file}"
-                ) from exc
-            if "id" not in payload or "prompt" not in payload:
-                raise ValueError(
-                    f"Missing 'id' or 'prompt' on line {line_number} in {prompt_file}"
-                )
-            template = payload.get("template")
-            if not isinstance(template, str):
-                template = ""
-            prompts.append(
-                {
-                    "id": payload["id"],
-                    "template": template,
-                    "prompt": payload["prompt"],
-                }
+    for source_path, line_number, raw_line in iter_jsonl_lines(prompt_file):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid JSON on line {line_number} in {source_path}"
+            ) from exc
+        if "id" not in payload or "prompt" not in payload:
+            raise ValueError(
+                f"Missing 'id' or 'prompt' on line {line_number} in {source_path}"
             )
+        template = payload.get("template")
+        if not isinstance(template, str):
+            template = ""
+        prompts.append(
+            {
+                "id": payload["id"],
+                "template": template,
+                "prompt": payload["prompt"],
+            }
+        )
     return prompts
 
 
 def load_existing_output(output_file: Path) -> List[Dict[str, str]]:
-    if not output_file.exists():
-        return []
     existing: List[Dict[str, str]] = []
-    with output_file.open("r", encoding="utf-8") as handle:
-        for line_number, raw_line in enumerate(handle, start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Invalid JSON on line {line_number} in {output_file}"
-                ) from exc
-            if "id" not in payload:
-                raise ValueError(
-                    f"Missing 'id' on line {line_number} in {output_file}"
-                )
-            existing.append(payload)
+    for source_path, line_number, raw_line in iter_jsonl_lines(output_file):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid JSON on line {line_number} in {source_path}"
+            ) from exc
+        if "id" not in payload:
+            raise ValueError(
+                f"Missing 'id' on line {line_number} in {source_path}"
+            )
+        existing.append(payload)
     return existing
 
 
 def write_output(output_file: Path, entries: List[Dict[str, str]]) -> None:
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    with output_file.open("w", encoding="utf-8") as handle:
-        for entry in entries:
-            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    write_jsonl(output_file, entries)
 
 
 def append_output(output_file: Path, entry: Dict[str, str]) -> None:
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    with output_file.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    append_jsonl_record(output_file, entry)
 
 
 def _plan_complete(plan_file: Path) -> bool:
@@ -175,11 +173,11 @@ def _filter_outputs(
     min_chars: int,
     max_chars: int,
     rejected_output_file: Path | None,
-) -> None:
+    overwrite_rejected: bool,
+) -> set[str]:
     """Filter the output file in place after used_terms have been evaluated."""
-    temp_filtered_file = output_file.with_suffix(output_file.suffix + ".filtered.tmp")
-    if temp_filtered_file.exists():
-        temp_filtered_file.unlink()
+    temp_filtered_file = make_temp_target(output_file, ".filtered.tmp")
+    remove_jsonl_target(temp_filtered_file)
 
     summary = filter_jsonl_file(
         input_file=output_file,
@@ -191,9 +189,10 @@ def _filter_outputs(
         ),
         rejected_file=rejected_output_file,
         overwrite=True,
+        overwrite_rejected=overwrite_rejected,
     )
 
-    temp_filtered_file.replace(output_file)
+    replace_jsonl_target(temp_filtered_file, output_file)
 
     print("Filter summary:")
     print(f"  processed={summary['processed']}")
@@ -203,6 +202,36 @@ def _filter_outputs(
     if reasons:
         for reason, count in sorted(reasons.items()):
             print(f"  - {reason}: {count}")
+
+    rejected_ids = summary.get("rejected_ids", [])
+    if isinstance(rejected_ids, list):
+        return {item for item in rejected_ids if isinstance(item, str) and item}
+    return set()
+
+
+def _discard_rejected_prompts(prompt_file: Path, rejected_ids: set[str]) -> None:
+    """Remove rejected prompt IDs from prompt file so they are not regenerated."""
+    if not rejected_ids or not prompt_file.exists():
+        return
+
+    prompt_records = read_jsonl(prompt_file)
+    if not prompt_records:
+        return
+
+    kept_records = []
+    removed_count = 0
+    for record in prompt_records:
+        record_id = record.get("id") if isinstance(record, dict) else None
+        if isinstance(record_id, str) and record_id in rejected_ids:
+            removed_count += 1
+            continue
+        kept_records.append(record)
+
+    if removed_count == 0:
+        return
+
+    write_jsonl(prompt_file, kept_records)
+    print(f"Removed {removed_count} rejected prompts from {prompt_file}")
 
 
 def main() -> None:
@@ -237,7 +266,7 @@ def main() -> None:
         "--prompt-file",
         type=Path,
         default=Path("prompts/generated_prompts.jsonl"),
-        help="Prompt JSONL output file.",
+        help="Prompt JSONL file, or partition directory using part_xx.jsonl files.",
     )
     parser.add_argument(
         "--optional-count",
@@ -249,7 +278,7 @@ def main() -> None:
         "--output-file",
         type=Path,
         default=Path("data/outputs/output.jsonl"),
-        help="LLM output JSONL file.",
+        help="LLM output JSONL file, or partition directory using part_xx.jsonl files.",
     )
     parser.add_argument(
         "--overwrite",
@@ -313,7 +342,7 @@ def main() -> None:
     parser.add_argument(
         "--filter-min-used-terms",
         type=int,
-        default=4,
+        default=3,
         help="Minimum used terms required for generated records.",
     )
     parser.add_argument(
@@ -332,7 +361,7 @@ def main() -> None:
         "--rejected-output-file",
         type=Path,
         default=None,
-        help="Optional JSONL file to store rejected generated records with reason.",
+        help="Optional JSONL file or partition directory for rejected records.",
     )
 
     args = parser.parse_args()
@@ -367,13 +396,15 @@ def main() -> None:
         )
         _update_plan(args.plan_file, args.output_file, accumulate=False)
         if not args.disable_output_filter:
-            _filter_outputs(
+            rejected_ids = _filter_outputs(
                 args.output_file,
                 args.filter_min_used_terms,
                 args.filter_min_chars,
                 args.filter_max_chars,
                 args.rejected_output_file,
+                args.overwrite,
             )
+            _discard_rejected_prompts(args.prompt_file, rejected_ids)
             _update_plan(args.plan_file, args.output_file, accumulate=False)
 
 

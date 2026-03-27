@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from prompt_creation.chunked_jsonl import append_jsonl_record
+from prompt_creation.chunked_jsonl import clear_jsonl_target
+from prompt_creation.chunked_jsonl import iter_jsonl_lines
+
 
 @dataclass(frozen=True)
 class FilterConfig:
@@ -70,24 +74,21 @@ def validate_output_record(record: dict, config: FilterConfig) -> ValidationResu
 
 def iter_jsonl(path: Path) -> Iterator[dict]:
     """Yield JSON objects from a JSONL file while skipping invalid rows."""
-    with path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                yield payload
+    for _source_path, _line_number, raw_line in iter_jsonl_lines(path):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            yield payload
 
 
 def write_jsonl_line(path: Path, record: dict) -> None:
     """Append one JSON object to a JSONL file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    append_jsonl_record(path, record)
 
 
 def filter_jsonl_file(
@@ -96,22 +97,25 @@ def filter_jsonl_file(
     config: FilterConfig,
     rejected_file: Path | None = None,
     overwrite: bool = False,
+    overwrite_rejected: bool | None = None,
 ) -> dict[str, object]:
     """Filter records from input_file and write accepted/rejected outputs."""
     if not input_file.exists():
         raise FileNotFoundError(f"Input file not found: {input_file}")
 
+    if overwrite_rejected is None:
+        overwrite_rejected = overwrite
+
     if overwrite:
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text("", encoding="utf-8")
-        if rejected_file is not None:
-            rejected_file.parent.mkdir(parents=True, exist_ok=True)
-            rejected_file.write_text("", encoding="utf-8")
+        clear_jsonl_target(output_file)
+        if rejected_file is not None and overwrite_rejected:
+            clear_jsonl_target(rejected_file)
 
     processed = 0
     accepted = 0
     rejected = 0
     reasons: Counter[str] = Counter()
+    rejected_ids: set[str] = set()
 
     for record in iter_jsonl(input_file):
         processed += 1
@@ -129,9 +133,14 @@ def filter_jsonl_file(
             audited["filter_reason"] = reason
             write_jsonl_line(rejected_file, audited)
 
+        record_id = record.get("id")
+        if isinstance(record_id, str) and record_id:
+            rejected_ids.add(record_id)
+
     return {
         "processed": processed,
         "accepted": accepted,
         "rejected": rejected,
         "reasons": dict(reasons),
+        "rejected_ids": sorted(rejected_ids),
     }

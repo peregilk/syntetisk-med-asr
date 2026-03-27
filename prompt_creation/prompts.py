@@ -19,6 +19,9 @@ from pathlib import Path
 from typing import Iterable
 from tqdm import tqdm
 
+from prompt_creation.chunked_jsonl import append_jsonl_record
+from prompt_creation.chunked_jsonl import read_jsonl
+from prompt_creation.chunked_jsonl import write_jsonl
 from prompt_creation.processing import _normalize_term
 from prompt_creation.processing import build_variant_maps
 from prompt_creation.processing import tokenize_terms
@@ -30,26 +33,12 @@ _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")  # Approximate sentence b
 
 def _read_jsonl(path: Path) -> list[dict]:
 	"""Load JSONL into memory, skipping invalid lines."""
-	items: list[dict] = []
-	if not path.exists():
-		return items
-	for raw in path.read_text(encoding="utf-8").splitlines():
-		line = raw.strip()
-		if not line:
-			continue
-		try:
-			items.append(json.loads(line))
-		except json.JSONDecodeError:
-			continue
-	return items
+	return read_jsonl(path)
 
 
 def _write_jsonl(path: Path, items: Iterable[dict]) -> None:
 	"""Write JSONL to disk with UTF-8 encoding."""
-	path.parent.mkdir(parents=True, exist_ok=True)
-	with path.open("w", encoding="utf-8") as handle:
-		for item in items:
-			handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+	write_jsonl(path, items)
 
 
 def _extract_text_from_output(record: dict) -> str | None:
@@ -96,14 +85,14 @@ def _is_titlecase_word(token: str) -> bool:
 	return token[:1].isupper() and token[1:].islower()
 
 
-def _match_term_token(
+def _match_candidate_token(
 	token: str,
 	sentence_start: bool,
 	variant_to_term: dict[str, str],
 	normalized_to_term: dict[str, str],
 	stemmer,
 ) -> str | None:
-	"""Match a token to a plan term with strict casing + sentence-start exception."""
+	"""Match a token candidate to a plan term with strict casing rules."""
 	if token in variant_to_term:
 		return variant_to_term[token]
 
@@ -116,6 +105,64 @@ def _match_term_token(
 	if token.islower() or allow_casefold:
 		normalized = _normalize_term(token.lower() if allow_casefold else token, stemmer)
 		return normalized_to_term.get(normalized)
+	return None
+
+
+def _iter_hyphen_candidates(token: str) -> Iterable[str]:
+	"""Yield contiguous hyphen subparts for fallback matching."""
+	parts = [part for part in token.split("-") if part]
+	if len(parts) < 2:
+		return
+
+	seen: set[str] = set()
+	for start_index in range(len(parts)):
+		for end_index in range(start_index + 1, len(parts) + 1):
+			if start_index == 0 and end_index == len(parts):
+				continue
+			candidate = "-".join(parts[start_index:end_index])
+			if len(candidate) < 3:
+				continue
+			if candidate in seen:
+				continue
+			if not any(char.isalpha() for char in candidate):
+				continue
+			seen.add(candidate)
+			yield candidate
+
+
+def _match_term_token(
+	token: str,
+	sentence_start: bool,
+	variant_to_term: dict[str, str],
+	normalized_to_term: dict[str, str],
+	stemmer,
+) -> str | None:
+	"""Match a token to a plan term, including cautious hyphen-compound fallback."""
+	matched = _match_candidate_token(
+		token,
+		sentence_start,
+		variant_to_term,
+		normalized_to_term,
+		stemmer,
+	)
+	if matched is not None:
+		return matched
+
+	if "-" not in token:
+		return None
+
+	for candidate in _iter_hyphen_candidates(token):
+		candidate_at_sentence_start = sentence_start and token.startswith(candidate)
+		matched = _match_candidate_token(
+			candidate,
+			candidate_at_sentence_start,
+			variant_to_term,
+			normalized_to_term,
+			stemmer,
+		)
+		if matched is not None:
+			return matched
+
 	return None
 
 
@@ -455,7 +502,6 @@ def _generate_prompts(
 			)
 
 	if prompts:
-		with output_file.open("a", encoding="utf-8") as handle:
-			for item in prompts:
-				handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+		for item in prompts:
+			append_jsonl_record(output_file, item)
 	_write_jsonl(plan_file, plan_entries)

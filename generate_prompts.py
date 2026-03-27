@@ -64,7 +64,7 @@ def _build_parser() -> argparse.ArgumentParser:
 		"--output-file",
 		type=Path,
 		default=project_root / "data" / "outputs" / "output.jsonl",
-		help="JSONL with model responses (supports text/response/result formats)",
+		help="JSONL file or partition directory with model responses",
 	)
 	update_parser.add_argument(
 		"--accumulate",
@@ -102,7 +102,7 @@ def _build_parser() -> argparse.ArgumentParser:
 		"--output-file",
 		type=Path,
 		default=project_root / "prompts" / "generated_prompts.jsonl",
-		help="Output prompts JSONL",
+		help="Output prompts JSONL file or partition directory",
 	)
 	generate_parser.add_argument(
 		"--optional-count",
@@ -137,24 +137,24 @@ def _build_parser() -> argparse.ArgumentParser:
 		"--input-file",
 		type=Path,
 		default=project_root / "data" / "results" / "medical_results_deepseek.jsonl",
-		help="Input output JSONL to filter",
+		help="Input output JSONL file or partition directory to filter",
 	)
 	filter_parser.add_argument(
 		"--output-file",
 		type=Path,
 		default=project_root / "data" / "results" / "medical_results_deepseek_filtered.jsonl",
-		help="Filtered output JSONL (accepted records only)",
+		help="Filtered output JSONL file or partition directory (accepted records only)",
 	)
 	filter_parser.add_argument(
 		"--rejected-file",
 		type=Path,
 		default=None,
-		help="Optional JSONL file for rejected records with filter_reason",
+		help="Optional JSONL file or partition directory for rejected records",
 	)
 	filter_parser.add_argument(
 		"--min-used-terms",
 		type=int,
-		default=4,
+		default=3,
 		help="Minimum number of used terms required",
 	)
 	filter_parser.add_argument(
@@ -166,7 +166,7 @@ def _build_parser() -> argparse.ArgumentParser:
 	filter_parser.add_argument(
 		"--max-chars",
 		type=int,
-		default=600,
+		default=700,
 		help="Maximum text length in characters (inclusive)",
 	)
 	filter_parser.add_argument(
@@ -189,19 +189,19 @@ def _build_parser() -> argparse.ArgumentParser:
 		"--input-file",
 		type=Path,
 		default=project_root / "data" / "results" / "medical_results_deepseek_filtered.jsonl",
-		help="Input accepted/filtered output JSONL",
+		help="Input accepted/filtered output JSONL file or partition directory",
 	)
 	prune_parser.add_argument(
 		"--output-file",
 		type=Path,
 		default=project_root / "data" / "results" / "medical_results_deepseek_pruned.jsonl",
-		help="Output JSONL for kept records after pruning",
+		help="Output JSONL file or partition directory for kept records after pruning",
 	)
 	prune_parser.add_argument(
 		"--rejected-file",
 		type=Path,
 		default=project_root / "data" / "results" / "medical_results_deepseek_rejected.jsonl",
-		help="Rejected JSONL destination for obsolete records",
+		help="Rejected JSONL file or partition directory for obsolete records",
 	)
 	prune_parser.add_argument(
 		"--overwrite",

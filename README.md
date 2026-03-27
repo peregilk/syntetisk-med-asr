@@ -112,6 +112,30 @@ Etter hver iterasjon gjør pipelinen nå:
 3) Filtrering av output-fil med kravene over.
 4) Ny planoppdatering på filtrert output.
 
+### Partitionerte JSONL-kataloger for store filer
+
+For disse path-argumentene kan du gi enten en `.jsonl`-fil eller en katalog:
+- prompt-filer
+- output-filer
+- rejected-filer
+
+Hvis path ikke ender med `.jsonl`, behandles den som en partition-katalog.
+
+Regler:
+- Filer navngis som `part_00.jsonl`, `part_01.jsonl`, osv.
+- Maks størrelse per del er 60 MB.
+- Ved append skrives nye records til siste del som fortsatt har plass, ellers opprettes neste del.
+- Ved lesing forventes sammenhengende sekvens uten hull i part-indekser.
+
+Eksempel:
+
+```bash
+uv run python main.py \
+  --prompt-file prompts/post_bulk_balance \
+  --output-file data/outputs/medical_results_balanced \
+  --rejected-output-file data/outputs/medical_results_rejected
+```
+
 ### 2b) Sette opp for bulk-run eksternt (lokalt i dette repoet)
 For bulk-run lager du først hele prompt-settet lokalt, og kjører så selve LLM-jobben eksternt.
 

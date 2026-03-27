@@ -8,6 +8,10 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from prompt_creation.chunked_jsonl import append_jsonl_record
+from prompt_creation.chunked_jsonl import make_temp_target
+from prompt_creation.chunked_jsonl import remove_jsonl_target
+from prompt_creation.chunked_jsonl import replace_jsonl_target
 from prompt_creation.output_filter import iter_jsonl
 
 
@@ -143,41 +147,33 @@ def prune_obsolete_jsonl(
     processed = len(terms_by_index)
 
     if overwrite:
-        temp_output = output_file.with_suffix(output_file.suffix + ".tmp")
-        temp_rejected = rejected_file.with_suffix(rejected_file.suffix + ".tmp")
-        temp_output.parent.mkdir(parents=True, exist_ok=True)
-        temp_rejected.parent.mkdir(parents=True, exist_ok=True)
+        temp_output = make_temp_target(output_file)
+        temp_rejected = make_temp_target(rejected_file)
+        remove_jsonl_target(temp_output)
+        remove_jsonl_target(temp_rejected)
 
-        with temp_output.open("w", encoding="utf-8") as kept_handle, temp_rejected.open(
-            "w", encoding="utf-8"
-        ) as rejected_handle:
-            for index, record in enumerate(iter_jsonl(input_file)):
-                if index in obsolete_indexes:
-                    obsolete = dict(record)
-                    obsolete["filter_reason"] = "obsolete_terms_saturated"
-                    rejected_handle.write(json.dumps(obsolete, ensure_ascii=False) + "\n")
-                    moved_count += 1
-                else:
-                    kept_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    kept_count += 1
+        for index, record in enumerate(iter_jsonl(input_file)):
+            if index in obsolete_indexes:
+                obsolete = dict(record)
+                obsolete["filter_reason"] = "obsolete_terms_saturated"
+                append_jsonl_record(temp_rejected, obsolete)
+                moved_count += 1
+            else:
+                append_jsonl_record(temp_output, record)
+                kept_count += 1
 
-        temp_output.replace(output_file)
-        temp_rejected.replace(rejected_file)
+        replace_jsonl_target(temp_output, output_file)
+        replace_jsonl_target(temp_rejected, rejected_file)
     else:
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        rejected_file.parent.mkdir(parents=True, exist_ok=True)
-        with output_file.open("a", encoding="utf-8") as kept_handle, rejected_file.open(
-            "a", encoding="utf-8"
-        ) as rejected_handle:
-            for index, record in enumerate(iter_jsonl(input_file)):
-                if index in obsolete_indexes:
-                    obsolete = dict(record)
-                    obsolete["filter_reason"] = "obsolete_terms_saturated"
-                    rejected_handle.write(json.dumps(obsolete, ensure_ascii=False) + "\n")
-                    moved_count += 1
-                else:
-                    kept_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    kept_count += 1
+        for index, record in enumerate(iter_jsonl(input_file)):
+            if index in obsolete_indexes:
+                obsolete = dict(record)
+                obsolete["filter_reason"] = "obsolete_terms_saturated"
+                append_jsonl_record(rejected_file, obsolete)
+                moved_count += 1
+            else:
+                append_jsonl_record(output_file, record)
+                kept_count += 1
 
     summary = PruneSummary(
         processed=processed,
