@@ -10,26 +10,73 @@ The script also handles result as a dict with a text field.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
-import os
 import re
+import sys
 from pathlib import Path
-from typing import Optional, TextIO
+from typing import Optional
+from tqdm import tqdm
 
-from openai import OpenAI
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from prompt_creation.chunked_jsonl import make_temp_target
+from prompt_creation.chunked_jsonl import remove_jsonl_target
+from prompt_creation.chunked_jsonl import replace_jsonl_target
+from prompt_creation.generate_outputs import _resolve_api_key, generate_outputs
 
 
-# MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
-MODEL_NAME = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
+# MODEL_NAME = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+# MODEL_NAME = "microsoft/phi-4"
+# MODEL_NAME = "google/gemma-4-26B-A4B-it"
+# MODEL_NAME = "google/gemma-4-31B-it"
 DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai"
 DEFAULT_INPUT_PATH = Path("data/outputs/tts/id_result_parts")
+GENERATION_CONCURRENCY = 200
+GENERATION_MAX_RETRIES = 0
+GENERATION_RETRY_BACKOFF_S = 0.5
+GENERATION_BATCH_SIZE = 200
+GENERATION_RESPONSE_FORMAT = {"type": "json_object"}
+_JSON_DECODER = json.JSONDecoder()
+_INVALID_ESCAPE_PATTERN = re.compile(r"\\([^\"\\/bfnrtu])")
 
 
-def _resolve_api_key(api_key: Optional[str]) -> str:
-    resolved_key = api_key or os.environ.get("DEEPINFRA_API_KEY")
-    if not resolved_key:
-        raise EnvironmentError("Missing DEEPINFRA_API_KEY environment variable")
-    return resolved_key
+@dataclass
+class _PendingNormalization:
+    line_number: int
+    record_id: str
+    original_text: str
+    result_value: object
+    mode: str
+    updated_record: dict
+    prompt: str
+
+
+@dataclass
+class _LazyStatusLog:
+    path: Path
+    handle: Optional[object] = None
+    created: bool = False
+
+    @property
+    def was_created(self) -> bool:
+        return self.created
+
+    def write_record(self, payload: dict[str, str | int]) -> None:
+        if self.handle is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.handle = self.path.open("w", encoding="utf-8")
+            self.created = True
+        self.handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        self.handle.flush()
+
+    def close(self) -> None:
+        if self.handle is not None:
+            self.handle.close()
+            self.handle = None
 
 
 def _read_text_from_result(result_value: object) -> tuple[str | None, str]:
@@ -41,6 +88,24 @@ def _read_text_from_result(result_value: object) -> tuple[str | None, str]:
         try:
             parsed = json.loads(result_value)
         except json.JSONDecodeError:
+            sanitized_result_value = _sanitize_invalid_json_escapes(result_value)
+            if sanitized_result_value != result_value:
+                try:
+                    parsed = json.loads(sanitized_result_value)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    text = parsed.get("text")
+                    if isinstance(text, str):
+                        return text, "string"
+
+            recovered_text = _read_text_from_malformed_result_string(result_value)
+            if recovered_text is not None:
+                return recovered_text, "string"
+
+            recovered_text = _read_text_from_malformed_result_string(sanitized_result_value)
+            if recovered_text is not None:
+                return recovered_text, "string"
             return None, "string"
         if not isinstance(parsed, dict):
             return None, "string"
@@ -55,6 +120,77 @@ def _read_text_from_result(result_value: object) -> tuple[str | None, str]:
             return text, "dict"
 
     return None, "string"
+
+
+def _join_text_fragments(fragments: list[str]) -> str:
+    if not fragments:
+        return ""
+
+    combined = fragments[0]
+    for fragment in fragments[1:]:
+        # Adjacent JSON strings imply missing escaping in the producer.
+        if combined and fragment and not combined[-1].isspace() and not fragment[0].isspace():
+            combined += " "
+        combined += fragment
+    return combined
+
+
+def _sanitize_invalid_json_escapes(text: str) -> str:
+    """Drop backslashes before non-JSON escape characters.
+
+    Example: \\' -> ' while preserving valid escapes like \\n, \\" and \\u00f8.
+    """
+    return _INVALID_ESCAPE_PATTERN.sub(r"\1", text)
+
+
+def _read_text_from_malformed_result_string(result_text: str) -> str | None:
+    """Recover `text` from malformed result JSON when possible.
+
+    Handles common producer errors where `text` becomes multiple adjacent
+    JSON string literals, for example: {"text": "A" "B"}.
+    """
+    key_index = result_text.find('"text"')
+    if key_index < 0:
+        return None
+
+    colon_index = result_text.find(":", key_index)
+    if colon_index < 0:
+        return None
+
+    cursor = colon_index + 1
+    text_length = len(result_text)
+    while cursor < text_length and result_text[cursor].isspace():
+        cursor += 1
+
+    fragments: list[str] = []
+    while cursor < text_length:
+        if result_text[cursor] != '"':
+            break
+        try:
+            fragment, next_cursor = _JSON_DECODER.raw_decode(result_text, cursor)
+        except json.JSONDecodeError:
+            return None
+
+        if not isinstance(fragment, str):
+            return None
+        fragments.append(fragment)
+        cursor = next_cursor
+
+        while cursor < text_length and result_text[cursor].isspace():
+            cursor += 1
+
+        if cursor >= text_length:
+            break
+        if result_text[cursor] == '"':
+            # Continue parsing adjacent string literals.
+            continue
+        if result_text[cursor] in {"}", ","}:
+            break
+        return None
+
+    if not fragments:
+        return None
+    return _join_text_fragments(fragments)
 
 
 def _write_text_back(result_value: object, mode: str, new_text: str) -> object:
@@ -106,7 +242,7 @@ def _record_id_for_log(record: dict, input_file: Path, line_number: int) -> str:
 
 
 def _write_status_log(
-    status_log_handle: Optional[TextIO],
+    status_log_handle: Optional[_LazyStatusLog],
     *,
     input_file: Path,
     line_number: int,
@@ -126,7 +262,16 @@ def _write_status_log(
     if details:
         payload["details"] = details
 
-    status_log_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    status_log_handle.write_record(payload)
+
+
+def _count_non_empty_lines(path: Path) -> int:
+    count = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            if raw_line.strip():
+                count += 1
+    return count
 
 
 def _load_system_prompt(prompt_path: Path) -> str:
@@ -142,7 +287,7 @@ def _extract_output_text(response_content: str) -> str:
     """Extract normalized sentence from model JSON output.
 
     Expected format:
-    {"stil":"tts_optimalisert","input":"...","output":"..."}
+    {"output":"..."}
     """
     if not response_content.strip():
         raise ValueError("Model response was empty")
@@ -165,24 +310,166 @@ def _extract_output_text(response_content: str) -> str:
     return output_text
 
 
-def _normalize_text_with_llm(client: OpenAI, system_prompt: str, text: str, reasoning_effort: str) -> str:
-    user_prompt = f"{system_prompt}\n{text}"
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        reasoning_effort=reasoning_effort,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-    content = response.choices[0].message.content or ""
-    return _extract_output_text(content)
+def _build_generation_prompt(text: str) -> str:
+    return text
+
+
+def _apply_batch_results(
+    pending_batch: list[_PendingNormalization],
+    generation_results: list,
+    input_file: Path,
+    status_log_handle: Optional[_LazyStatusLog],
+    verbose: bool,
+) -> tuple[int, int]:
+    """Apply model outputs to pending records.
+
+    Returns (changed_records, failed_records).
+    """
+    changed_records = 0
+    failed_records = 0
+
+    if len(generation_results) != len(pending_batch):
+        missing = len(pending_batch) - len(generation_results)
+        if missing > 0:
+            for item in pending_batch[-missing:]:
+                failed_records += 1
+                _write_status_log(
+                    status_log_handle,
+                    input_file=input_file,
+                    line_number=item.line_number,
+                    record_id=item.record_id,
+                    status="failed_llm_normalization",
+                    details="ProviderError: Missing result for input prompt",
+                )
+                if verbose:
+                    print(
+                        f"[fail] id={item.record_id} status=failed_llm_normalization "
+                        "error=ProviderError: Missing result for input prompt"
+                    )
+
+    for item, result in zip(pending_batch, generation_results):
+        if result.error:
+            failed_records += 1
+            _write_status_log(
+                status_log_handle,
+                input_file=input_file,
+                line_number=item.line_number,
+                record_id=item.record_id,
+                status="failed_llm_normalization",
+                details=f"ProviderError: {result.error}",
+            )
+            if verbose:
+                print(
+                    f"[fail] id={item.record_id} status=failed_llm_normalization "
+                    f"error=ProviderError: {result.error}"
+                )
+            continue
+
+        try:
+            normalized_text = _extract_output_text(result.content)
+        except Exception as exc:
+            failed_records += 1
+            _write_status_log(
+                status_log_handle,
+                input_file=input_file,
+                line_number=item.line_number,
+                record_id=item.record_id,
+                status="failed_llm_normalization",
+                details=f"ParseError: {type(exc).__name__}: {exc}",
+            )
+            if verbose:
+                print(
+                    f"[fail] id={item.record_id} status=failed_llm_normalization "
+                    f"error=ParseError: {type(exc).__name__}: {exc}"
+                )
+            continue
+
+        if normalized_text != item.original_text:
+            changed_records += 1
+        item.updated_record["result"] = _write_text_back(item.result_value, item.mode, normalized_text)
+
+    return changed_records, failed_records
+
+
+def _flush_pending_batch(
+    *,
+    pending_normalizations: list[_PendingNormalization],
+    input_file: Path,
+    api_key: str,
+    concurrency: int,
+    batch_size: int,
+    system_prompt: str,
+    reasoning_effort: str,
+    status_log_handle: Optional[_LazyStatusLog],
+    verbose: bool,
+) -> tuple[int, int]:
+    """Normalize pending records in explicit chunk loops.
+
+    Returns (changed_records, failed_records).
+    """
+    if not pending_normalizations:
+        return 0, 0
+
+    changed_records = 0
+    failed_records = 0
+
+    for start_index in range(0, len(pending_normalizations), batch_size):
+        batch = pending_normalizations[start_index : start_index + batch_size]
+        prompts = [item.prompt for item in batch]
+        try:
+            generation_results = generate_outputs(
+                prompts=prompts,
+                system_prompt=system_prompt,
+                api_key=api_key,
+                concurrency=concurrency,
+                max_retries=GENERATION_MAX_RETRIES,
+                retry_backoff_s=GENERATION_RETRY_BACKOFF_S,
+                batch_size=len(prompts),
+                reasoning_effort=reasoning_effort,
+                model_name=MODEL_NAME,
+                base_url=DEEPINFRA_BASE_URL,
+                response_format=GENERATION_RESPONSE_FORMAT,
+            )
+        except Exception as exc:
+            for item in batch:
+                failed_records += 1
+                _write_status_log(
+                    status_log_handle,
+                    input_file=input_file,
+                    line_number=item.line_number,
+                    record_id=item.record_id,
+                    status="failed_llm_normalization",
+                    details=f"BatchGenerationError: {type(exc).__name__}: {exc}",
+                )
+                if verbose:
+                    print(
+                        f"[fail] id={item.record_id} status=failed_llm_normalization "
+                        f"error=BatchGenerationError: {type(exc).__name__}: {exc}"
+                    )
+            continue
+
+        batch_changed, batch_failed = _apply_batch_results(
+            pending_batch=batch,
+            generation_results=generation_results,
+            input_file=input_file,
+            status_log_handle=status_log_handle,
+            verbose=verbose,
+        )
+        changed_records += batch_changed
+        failed_records += batch_failed
+
+    return changed_records, failed_records
 
 
 def _transform_file(
     input_file: Path,
     output_file: Path,
-    client: OpenAI,
+    api_key: str,
+    concurrency: int,
+    batch_size: int,
     system_prompt: str,
     reasoning_effort: str,
-    status_log_handle: Optional[TextIO],
+    status_log_handle: Optional[_LazyStatusLog],
     verbose: bool,
 ) -> tuple[int, int, int, int]:
     """Transform one JSONL file.
@@ -190,97 +477,138 @@ def _transform_file(
     Returns (processed_records, changed_records, skipped_records, failed_records).
     """
     output_file.parent.mkdir(parents=True, exist_ok=True)
+    if output_file.suffix.lower() == ".jsonl":
+        # Keep .jsonl suffix so chunked_jsonl path-mode checks treat this as a file target.
+        temp_output_file = output_file.with_name(f"{output_file.stem}.normalize.tmp.jsonl")
+    else:
+        temp_output_file = make_temp_target(output_file, ".normalize.tmp")
+    remove_jsonl_target(temp_output_file)
 
     processed_records = 0
     changed_records = 0
     skipped_records = 0
     failed_records = 0
+    pending_normalizations: list[_PendingNormalization] = []
+    total_non_empty_lines = _count_non_empty_lines(input_file)
 
-    with input_file.open("r", encoding="utf-8") as source, output_file.open("w", encoding="utf-8") as target:
-        for line_number, raw_line in enumerate(source, start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
+    try:
+        with input_file.open("r", encoding="utf-8") as source, temp_output_file.open(
+            "w", encoding="utf-8"
+        ) as target, tqdm(
+            total=total_non_empty_lines,
+            desc=f"Normalizing {input_file.name}",
+            unit="record",
+        ) as progress:
+            for line_number, raw_line in enumerate(source, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
 
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                skipped_records += 1
-                _write_status_log(
-                    status_log_handle,
-                    input_file=input_file,
-                    line_number=line_number,
-                    record_id=f"{input_file.name}:{line_number}",
-                    status="skipped_invalid_json",
-                    details="Line is not valid JSON",
-                )
-                if verbose:
-                    print(f"[skip] {input_file.name}:{line_number} status=skipped_invalid_json")
-                continue
-
-            if not isinstance(record, dict):
-                skipped_records += 1
-                _write_status_log(
-                    status_log_handle,
-                    input_file=input_file,
-                    line_number=line_number,
-                    record_id=f"{input_file.name}:{line_number}",
-                    status="skipped_non_object_record",
-                    details="Top-level JSON value is not an object",
-                )
-                if verbose:
-                    print(f"[skip] {input_file.name}:{line_number} status=skipped_non_object_record")
-                continue
-
-            processed_records += 1
-            record_id = _record_id_for_log(record, input_file, line_number)
-            result_value = record.get("result")
-            text, mode = _read_text_from_result(result_value)
-
-            if text is None:
-                skipped_records += 1
-                _write_status_log(
-                    status_log_handle,
-                    input_file=input_file,
-                    line_number=line_number,
-                    record_id=record_id,
-                    status="skipped_unreadable_result",
-                    details="Missing or invalid result.text payload",
-                )
-                if verbose:
-                    print(f"[skip] id={record_id} status=skipped_unreadable_result")
-                target.write(json.dumps(record, ensure_ascii=False) + "\n")
-                continue
-
-            updated_record = dict(record)
-            try:
-                normalized_text = _normalize_text_with_llm(
-                    client=client,
-                    system_prompt=system_prompt,
-                    text=text,
-                    reasoning_effort=reasoning_effort,
-                )
-                if normalized_text != text:
-                    changed_records += 1
-                updated_record["result"] = _write_text_back(result_value, mode, normalized_text)
-            except Exception as exc:
-                # Preserve the original record so downstream scripts can still consume the file.
-                failed_records += 1
-                _write_status_log(
-                    status_log_handle,
-                    input_file=input_file,
-                    line_number=line_number,
-                    record_id=record_id,
-                    status="failed_llm_normalization",
-                    details=f"{type(exc).__name__}: {exc}",
-                )
-                if verbose:
-                    print(
-                        f"[fail] id={record_id} status=failed_llm_normalization "
-                        f"error={type(exc).__name__}: {exc}"
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    skipped_records += 1
+                    _write_status_log(
+                        status_log_handle,
+                        input_file=input_file,
+                        line_number=line_number,
+                        record_id=f"{input_file.name}:{line_number}",
+                        status="skipped_invalid_json",
+                        details="Line is not valid JSON",
                     )
+                    if verbose:
+                        print(f"[skip] {input_file.name}:{line_number} status=skipped_invalid_json")
+                    progress.update(1)
+                    continue
 
-            target.write(json.dumps(updated_record, ensure_ascii=False) + "\n")
+                if not isinstance(record, dict):
+                    skipped_records += 1
+                    _write_status_log(
+                        status_log_handle,
+                        input_file=input_file,
+                        line_number=line_number,
+                        record_id=f"{input_file.name}:{line_number}",
+                        status="skipped_non_object_record",
+                        details="Top-level JSON value is not an object",
+                    )
+                    if verbose:
+                        print(f"[skip] {input_file.name}:{line_number} status=skipped_non_object_record")
+                    progress.update(1)
+                    continue
+
+                processed_records += 1
+                record_id = _record_id_for_log(record, input_file, line_number)
+                result_value = record.get("result")
+                text, mode = _read_text_from_result(result_value)
+
+                if text is None:
+                    skipped_records += 1
+                    _write_status_log(
+                        status_log_handle,
+                        input_file=input_file,
+                        line_number=line_number,
+                        record_id=record_id,
+                        status="skipped_unreadable_result",
+                        details="Missing or invalid result.text payload",
+                    )
+                    if verbose:
+                        print(f"[skip] id={record_id} status=skipped_unreadable_result")
+                    target.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    progress.update(1)
+                    continue
+
+                updated_record = dict(record)
+                pending_normalizations.append(
+                    _PendingNormalization(
+                        line_number=line_number,
+                        record_id=record_id,
+                        original_text=text,
+                        result_value=result_value,
+                        mode=mode,
+                        updated_record=updated_record,
+                        prompt=_build_generation_prompt(text),
+                    )
+                )
+                progress.update(1)
+
+                if len(pending_normalizations) >= batch_size:
+                    batch_changed, batch_failed = _flush_pending_batch(
+                        pending_normalizations=pending_normalizations,
+                        input_file=input_file,
+                        api_key=api_key,
+                        concurrency=concurrency,
+                        batch_size=batch_size,
+                        system_prompt=system_prompt,
+                        reasoning_effort=reasoning_effort,
+                        status_log_handle=status_log_handle,
+                        verbose=verbose,
+                    )
+                    changed_records += batch_changed
+                    failed_records += batch_failed
+                    for item in pending_normalizations:
+                        target.write(json.dumps(item.updated_record, ensure_ascii=False) + "\n")
+                    pending_normalizations = []
+
+            if pending_normalizations:
+                batch_changed, batch_failed = _flush_pending_batch(
+                    pending_normalizations=pending_normalizations,
+                    input_file=input_file,
+                    api_key=api_key,
+                    concurrency=concurrency,
+                    batch_size=batch_size,
+                    system_prompt=system_prompt,
+                    reasoning_effort=reasoning_effort,
+                    status_log_handle=status_log_handle,
+                    verbose=verbose,
+                )
+                changed_records += batch_changed
+                failed_records += batch_failed
+                for item in pending_normalizations:
+                    target.write(json.dumps(item.updated_record, ensure_ascii=False) + "\n")
+
+        replace_jsonl_target(temp_output_file, output_file)
+    finally:
+        remove_jsonl_target(temp_output_file)
 
     return processed_records, changed_records, skipped_records, failed_records
 
@@ -306,10 +634,22 @@ def main() -> None:
         help="Path to system prompt instructions used for normalization.",
     )
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=GENERATION_CONCURRENCY,
+        help="Maximum number of parallel model requests.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=GENERATION_BATCH_SIZE,
+        help="Number of prompts per batch for async generation.",
+    )
+    parser.add_argument(
         "--reasoning-effort",
         choices=["none", "low", "medium", "high"],
         default="none",
-        help="DeepSeek reasoning effort.",
+        help="Reasoning effort.",
     )
     parser.add_argument(
         "--api-key",
@@ -333,12 +673,12 @@ def main() -> None:
     args = parser.parse_args()
 
     resolved_key = _resolve_api_key(args.api_key)
-    client = OpenAI(api_key=resolved_key, base_url=DEEPINFRA_BASE_URL)
     system_prompt = _load_system_prompt(args.system_prompt_path)
 
     input_files = _jsonl_files_from_input(args.input_path)
     output_path = args.output_path if args.output_path is not None else _default_output_path(args.input_path)
     status_log_path = args.status_log_path if args.status_log_path is not None else _default_status_log_path(output_path)
+    status_log_handle = _LazyStatusLog(status_log_path)
 
     total_processed = 0
     total_changed = 0
@@ -346,15 +686,16 @@ def main() -> None:
     total_failed = 0
     output_files: list[Path] = []
 
-    status_log_path.parent.mkdir(parents=True, exist_ok=True)
-    with status_log_path.open("w", encoding="utf-8") as status_log_handle:
+    try:
         if output_path.suffix.lower() == ".jsonl":
             if len(input_files) != 1:
                 raise ValueError("When output-path is a .jsonl file, input must be a single .jsonl file")
             processed, changed, skipped, failed = _transform_file(
                 input_file=input_files[0],
                 output_file=output_path,
-                client=client,
+                api_key=resolved_key,
+                concurrency=args.concurrency,
+                batch_size=args.batch_size,
                 system_prompt=system_prompt,
                 reasoning_effort=args.reasoning_effort,
                 status_log_handle=status_log_handle,
@@ -372,7 +713,9 @@ def main() -> None:
                 processed, changed, skipped, failed = _transform_file(
                     input_file=input_file,
                     output_file=output_file,
-                    client=client,
+                    api_key=resolved_key,
+                    concurrency=args.concurrency,
+                    batch_size=args.batch_size,
                     system_prompt=system_prompt,
                     reasoning_effort=args.reasoning_effort,
                     status_log_handle=status_log_handle,
@@ -383,12 +726,16 @@ def main() -> None:
                 total_skipped += skipped
                 total_failed += failed
                 output_files.append(output_file)
+    finally:
+        status_log_handle.close()
+
+    status_log_summary = status_log_path if status_log_handle.was_created else "not_written"
 
     print("TTS LLM normalization summary:")
     print(f"  model={MODEL_NAME}")
     print(f"  input_files={len(input_files)}")
     print(f"  output_files={len(output_files)}")
-    print(f"  status_log={status_log_path}")
+    print(f"  status_log={status_log_summary}")
     print(f"  processed_records={total_processed}")
     print(f"  changed_records={total_changed}")
     print(f"  skipped_records={total_skipped}")
