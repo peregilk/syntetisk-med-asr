@@ -1,0 +1,58 @@
+Du optimaliserer tung medisinsk tekst for tekst-til-tale (TTS) opplesning.
+
+**Oppgave:**
+Gjør teksten optimal for en KI-basert TTS-motor, slik at uttalen og flyten blir helt korrekt. Du skal bevare meningsinnholdet og ordrekkefølgen i hver setning, men utvide forkortelser, skrive ut tall og spesialtegn, dele opp svært lange ord slik den skal uttales muntlig.
+
+**Formål:**
+TTS-motorer sliter ofte med lange medisinske faguttrykk, komplekse sammensetninger, forkortelser, symboler og tegnsetting. Formålet er å tvinge frem riktig uttale og naturlig rytme, uten å fjerne eller legge til meningsinnhold.
+
+**Hovedregel:**
+Rekkefølgen på ordene og det underliggende innholdet skal være nøyaktig det samme som i input. Endringene du gjør skal utelukkende reflektere hvordan teksten faktisk leses høyt av et menneske, samtidig som du beholder normal tegnsetting. Hvis originalsetning allerede er egnet for tts kan den returneres slik den står.
+
+**Regel for tegnsetting (Forenkling for TTS):**
+TTS-motorer leser best med enkel normal tegnsetting. 
+- Aldri fjern normal korrekt tegnsetting som bygger en setning: punktum (.), komma (,), spørsmålstegn (?) og utropstegn (!).
+- Øvrige spesialtegn skal enten
+  - fjernes
+  - erstattes med mellomrom eller et av de ovennevnte tillatte tegnene
+  - skrives med ord ut fra sammenhengen (mer enn/over (>), mindre enn/under (<), prosent (%), krøllalfa (@), pluss (+), minus (-) osv.) 
+- Hvis fjerning av et tegn krever en pustepause i opplesningen, erstatt det med et komma.
+- Bindestrek skal erstattes med mellomrom (f.eks. "ikke-plausibel" -> "ikke plausibel", "A-virus" -> "A virus", "tale- og språkevne" -> "tale og språkevne").
+- Punktum (.) skal aldri fjernes når det brukes for å avslutte en setning i input.
+
+**Tillatte endringer og særregler for TTS:**
+- Romertall: Skal skrives ut som tallord (type I -> type en, klasse II -> klasse to, grad IV -> grad fire).
+- Ordenstall: Skal skrives ut som ord (1. -> første, 2. -> andre).
+- Tall: Skal skrives ut med ord slik de uttales. Bruk kontekst: 
+  - Årstall leses to-og-to (1960 -> nitten seksti). 
+  - Mengder/doser leses fullt ut (1960 mg -> ett tusen ni hundre og seksti milligram, 0,5 -> null komma fem).
+- Bokstavforkortelser: Skal deles opp med mellomrom slik at bokstavene staves (DNA -> D N A, MR -> M R, EKG -> E K G).
+- Uttalte forkortelser (akronymer): Hvis forkortelsen naturlig uttales som et samlet ord, skal den beholdes som ett ord (NATO -> NATO, AIDS -> aids).
+- Måleenheter og symboler: Skal skrives helt ut slik de uttales (mg/L -> milligram per liter, % -> prosent, µg -> mikrogram).
+- Kjemiske begreper: Lange ord skal deles opp i logiske stavelser/morfemer med mellomrom for å tvinge frem riktig uttale (acetylglukosaminylgalaktosylglukosylceramid -> acetyl glukos aminyl galaktosyl glukosyl ceramid) og (fosfoenolpyruvatproteinfosfotransferase -> fosfoenol pyruvat protein fosfo transferase).
+- Svært lange sammensatte ord: Deles opp der det er naturlig for å unngå at TTS-en snubler (anteroposteriore -> antero posteriore, strålingsgjenkallingsreaksjon -> strålings gjenkallings reaksjon).
+- Vanligere sammensatte ord trengs ikke å deles opp (spontanabort, endetarmsåpning)
+- Lette fonetiske omskrivinger: Tillatt på ord eller bokstav-tall-kombinasjoner som TTS-en garantert vil uttale feil (SARS-CoV-2 -> sars kov to).
+- Utelatelsesapostrof kan fjernes (sammenslåing), eller omskrives for å gjør output lik muntlig uttale.
+
+**Ikke tillatt:**
+- Endre faglig innhold eller mening.
+- Endre rekkefølgen på ordene fra originalen.
+- Legge til ekstra forklarende ord som ikke er i teksten.
+- Fjerne informasjon.
+- Rette opp feil i den medisinske logikken (teksten skal være tro mot input).
+- Fjerne setningsoppbyggende tegnsetting (punktum, komma, spørsmålstegn, utropstegn).
+- Skrive ut tegnsetting (eks "punktum", "komma")
+- Stave ut bokstavene i et ord når det ikke er en forkortelse.
+
+**Eksempler på transformasjoner:**
+- "difteri-tetanus-pertussisvaksine" -> "difteri tetanus pertussis vaksine"
+- "strålingsgjenkallingsreaksjon" -> "strålings gjenkallings reaksjon"
+- "diltiazemhydroklorid DEPOTtab 300 mg" -> "diltiazem hydroklorid depot tab tre hundre milligram"
+- "SARS-CoV-2" -> "sars kov to"
+- "HbA1c-nivået var >7 %" -> "H b A en C nivået var over syv prosent"
+
+Returner **kun én linje JSONL** med nøkkelen `output`, slik:
+{"output":"<optimalisert setning>"}
+
+Setning:

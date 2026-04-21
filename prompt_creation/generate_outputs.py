@@ -30,7 +30,13 @@ def _resolve_api_key(api_key: Optional[str]) -> str:
 
 
 def generate_output(
-    prompt: str, api_key: Optional[str] = None, reasoning_effort: str = "none"
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    api_key: Optional[str] = None,
+    reasoning_effort: str = "none",
+    model_name: str = MODEL_NAME,
+    base_url: str = DEEPINFRA_BASE_URL,
+    response_format: Optional[dict[str, str]] = None,
 ) -> str:
     """Generate a response for a single prompt.
 
@@ -43,11 +49,17 @@ def generate_output(
         The model response content as a string (may be empty).
     """
     resolved_key = _resolve_api_key(api_key)
-    client = OpenAI(api_key=resolved_key, base_url=DEEPINFRA_BASE_URL)
+    client = OpenAI(api_key=resolved_key, base_url=base_url)
+    messages: list[dict[str, str]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
     response = client.chat.completions.create(
-        model=MODEL_NAME,
+        model=model_name,
         reasoning_effort=reasoning_effort,  # low, medium, high, or none
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
+        response_format=response_format,
     )
     return response.choices[0].message.content or ""
 
@@ -55,19 +67,28 @@ def generate_output(
 async def _generate_one(
     client: AsyncOpenAI,
     prompt: str,
+    system_prompt: Optional[str],
     semaphore: asyncio.Semaphore,
     max_retries: int,
     retry_backoff_s: float,
     reasoning_effort: str,
+    model_name: str,
+    response_format: Optional[dict[str, str]],
 ) -> GenerationResult:
     """Generate a response for a single prompt with retries."""
     async with semaphore:
         for attempt in range(max_retries + 1):
             try:
+                messages: list[dict[str, str]] = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
+
                 response = await client.chat.completions.create(
-                    model=MODEL_NAME,
+                    model=model_name,
                     reasoning_effort=reasoning_effort,  # low, medium, high, or none
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=messages,
+                    response_format=response_format,
                 )
                 content = response.choices[0].message.content or ""
                 return GenerationResult(prompt=prompt, content=content)
@@ -80,12 +101,16 @@ async def _generate_one(
 
 async def generate_outputs_async(
     prompts: Iterable[str],
+    system_prompt: Optional[str] = None,
     api_key: Optional[str] = None,
     concurrency: int = 50,
     max_retries: int = 2,
     retry_backoff_s: float = 0.5,
     batch_size: int = 100,
     reasoning_effort: str = "none",
+    model_name: str = MODEL_NAME,
+    base_url: str = DEEPINFRA_BASE_URL,
+    response_format: Optional[dict[str, str]] = None,
     on_batch_complete: Optional[Callable[[list[GenerationResult]], Awaitable[None]]] = None,
 ) -> list[GenerationResult]:
     """Generate outputs for many prompts concurrently.
@@ -112,17 +137,20 @@ async def generate_outputs_async(
     results: list[GenerationResult] = []
     prompt_list = list(prompts)
 
-    async with AsyncOpenAI(api_key=resolved_key, base_url=DEEPINFRA_BASE_URL) as client:
+    async with AsyncOpenAI(api_key=resolved_key, base_url=base_url) as client:
         for start_index in range(0, len(prompt_list), batch_size):
             batch_prompts = prompt_list[start_index : start_index + batch_size]
             tasks = [
                 _generate_one(
                     client=client,
                     prompt=prompt,
+                    system_prompt=system_prompt,
                     semaphore=semaphore,
                     max_retries=max_retries,
                     retry_backoff_s=retry_backoff_s,
                     reasoning_effort=reasoning_effort,
+                    model_name=model_name,
+                    response_format=response_format,
                 )
                 for prompt in batch_prompts
             ]
@@ -136,24 +164,32 @@ async def generate_outputs_async(
 
 def generate_outputs(
     prompts: Iterable[str],
+    system_prompt: Optional[str] = None,
     api_key: Optional[str] = None,
     concurrency: int = 50,
     max_retries: int = 2,
     retry_backoff_s: float = 0.5,
     batch_size: int = 100,
     reasoning_effort: str = "none",
+    model_name: str = MODEL_NAME,
+    base_url: str = DEEPINFRA_BASE_URL,
+    response_format: Optional[dict[str, str]] = None,
     on_batch_complete: Optional[Callable[[list[GenerationResult]], Awaitable[None]]] = None,
 ) -> list[GenerationResult]:
     """Synchronous wrapper for generate_outputs_async()."""
     return asyncio.run(
         generate_outputs_async(
             prompts=prompts,
+            system_prompt=system_prompt,
             api_key=api_key,
             concurrency=concurrency,
             max_retries=max_retries,
             retry_backoff_s=retry_backoff_s,
             batch_size=batch_size,
             reasoning_effort=reasoning_effort,
+            model_name=model_name,
+            base_url=base_url,
+            response_format=response_format,
             on_batch_complete=on_batch_complete,
         )
     )

@@ -4,7 +4,7 @@ Generate prompts and maintain a term usage plan.
 
 Workflow:
 1) init-plan: Build data/terms_to_use.jsonl from data/preprocessed/snomed.jsonl.
-2) update-plan: Count term usage in data/output.jsonl and update remaining counts.
+2) update-plan: Count term usage in output JSONL and update remaining counts.
 3) generate: Produce prompts.jsonl from the plan and template.
 """
 
@@ -14,6 +14,9 @@ import argparse
 import math
 from pathlib import Path
 
+from prompt_creation.obsolete_filter import prune_obsolete_jsonl
+from prompt_creation.output_filter import FilterConfig
+from prompt_creation.output_filter import filter_jsonl_file
 from prompt_creation.prompts import _generate_prompts
 from prompt_creation.prompts import _init_plan
 from prompt_creation.prompts import _read_jsonl
@@ -61,12 +64,19 @@ def _build_parser() -> argparse.ArgumentParser:
 		"--output-file",
 		type=Path,
 		default=project_root / "data" / "outputs" / "output.jsonl",
-		help="JSONL with model responses",
+		help="JSONL file or partition directory with model responses",
 	)
 	update_parser.add_argument(
 		"--accumulate",
 		action="store_true",
 		help="Add new counts to existing used_in_output",
+	)
+	update_parser.add_argument(
+		"--evaluate-mode",
+		type=str,
+		default="new",
+		choices=["new", "all"],
+		help="Term evaluation mode: 'new' processes only uncached records, 'all' recomputes all records.",
 	)
 
 	generate_parser = subparsers.add_parser("generate", help="Generate prompts from plan")
@@ -92,7 +102,7 @@ def _build_parser() -> argparse.ArgumentParser:
 		"--output-file",
 		type=Path,
 		default=project_root / "prompts" / "generated_prompts.jsonl",
-		help="Output prompts JSONL",
+		help="Output prompts JSONL file or partition directory",
 	)
 	generate_parser.add_argument(
 		"--optional-count",
@@ -117,6 +127,86 @@ def _build_parser() -> argparse.ArgumentParser:
 		default="none",
 		choices=["low", "medium", "high", "none"],
 		help="Reasoning effort used when estimating prompt coverage",
+	)
+
+	filter_parser = subparsers.add_parser(
+		"filter-output",
+		help="Filter output JSONL by used terms, text length, and result formatting",
+	)
+	filter_parser.add_argument(
+		"--input-file",
+		type=Path,
+		default=project_root / "data" / "results" / "medical_results_deepseek.jsonl",
+		help="Input output JSONL file or partition directory to filter",
+	)
+	filter_parser.add_argument(
+		"--output-file",
+		type=Path,
+		default=project_root / "data" / "results" / "medical_results_deepseek_filtered.jsonl",
+		help="Filtered output JSONL file or partition directory (accepted records only)",
+	)
+	filter_parser.add_argument(
+		"--rejected-file",
+		type=Path,
+		default=None,
+		help="Optional JSONL file or partition directory for rejected records",
+	)
+	filter_parser.add_argument(
+		"--min-used-terms",
+		type=int,
+		default=3,
+		help="Minimum number of used terms required",
+	)
+	filter_parser.add_argument(
+		"--min-chars",
+		type=int,
+		default=400,
+		help="Minimum text length in characters (inclusive)",
+	)
+	filter_parser.add_argument(
+		"--max-chars",
+		type=int,
+		default=700,
+		help="Maximum text length in characters (inclusive)",
+	)
+	filter_parser.add_argument(
+		"--overwrite",
+		action="store_true",
+		help="Overwrite output and rejected files instead of appending",
+	)
+
+	prune_parser = subparsers.add_parser(
+		"prune-obsolete",
+		help="Move obsolete records to rejected while preserving required term coverage",
+	)
+	prune_parser.add_argument(
+		"--plan-file",
+		type=Path,
+		default=project_root / "data" / "terms_to_use.jsonl",
+		help="Plan file used to determine required coverage",
+	)
+	prune_parser.add_argument(
+		"--input-file",
+		type=Path,
+		default=project_root / "data" / "results" / "medical_results_deepseek_filtered.jsonl",
+		help="Input accepted/filtered output JSONL file or partition directory",
+	)
+	prune_parser.add_argument(
+		"--output-file",
+		type=Path,
+		default=project_root / "data" / "results" / "medical_results_deepseek_pruned.jsonl",
+		help="Output JSONL file or partition directory for kept records after pruning",
+	)
+	prune_parser.add_argument(
+		"--rejected-file",
+		type=Path,
+		default=project_root / "data" / "results" / "medical_results_deepseek_rejected.jsonl",
+		help="Rejected JSONL file or partition directory for obsolete records",
+	)
+	prune_parser.add_argument(
+		"--overwrite",
+		action="store_true",
+		help="Overwrite output and rejected files instead of appending",
 	)
 
 	return parser
@@ -165,7 +255,12 @@ def main() -> None:
 		_init_plan(args.snomed_file, args.plan_file, args.target_count)
 		return
 	if args.command == "update-plan":
-		_update_plan(args.plan_file, args.output_file, args.accumulate)
+		_update_plan(
+			args.plan_file,
+			args.output_file,
+			args.accumulate,
+			args.evaluate_mode,
+		)
 		return
 	if args.command == "generate":
 		if args.generate_all:
@@ -183,6 +278,42 @@ def main() -> None:
 			args.seed,
 			generate_all=args.generate_all,
 		)
+		return
+	if args.command == "filter-output":
+		config = FilterConfig(
+			min_used_terms=args.min_used_terms,
+			min_chars=args.min_chars,
+			max_chars=args.max_chars,
+		)
+		summary = filter_jsonl_file(
+			input_file=args.input_file,
+			output_file=args.output_file,
+			config=config,
+			rejected_file=args.rejected_file,
+			overwrite=args.overwrite,
+		)
+		print(f"Processed: {summary['processed']}")
+		print(f"Accepted: {summary['accepted']}")
+		print(f"Rejected: {summary['rejected']}")
+		reasons = summary.get("reasons", {})
+		if reasons:
+			print("Rejection reasons:")
+			for reason, count in sorted(reasons.items()):
+				print(f"  - {reason}: {count}")
+		return
+	if args.command == "prune-obsolete":
+		summary = prune_obsolete_jsonl(
+			plan_file=args.plan_file,
+			input_file=args.input_file,
+			output_file=args.output_file,
+			rejected_file=args.rejected_file,
+			overwrite=args.overwrite,
+		)
+		print(f"Processed: {summary['processed']}")
+		print(f"Kept: {summary['kept']}")
+		print(f"Moved to rejected: {summary['moved']}")
+		print(f"Moved (missing used_terms): {summary['moved_missing_used_terms']}")
+		print(f"Moved (saturated terms): {summary['moved_saturated_terms']}")
 		return
 
 	raise ValueError(f"Unknown command: {args.command}")

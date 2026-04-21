@@ -17,7 +17,11 @@ import string
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
+from tqdm import tqdm
 
+from prompt_creation.chunked_jsonl import append_jsonl_record
+from prompt_creation.chunked_jsonl import read_jsonl
+from prompt_creation.chunked_jsonl import write_jsonl
 from prompt_creation.processing import _normalize_term
 from prompt_creation.processing import build_variant_maps
 from prompt_creation.processing import tokenize_terms
@@ -29,44 +33,42 @@ _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")  # Approximate sentence b
 
 def _read_jsonl(path: Path) -> list[dict]:
 	"""Load JSONL into memory, skipping invalid lines."""
-	items: list[dict] = []
-	if not path.exists():
-		return items
-	for raw in path.read_text(encoding="utf-8").splitlines():
-		line = raw.strip()
-		if not line:
-			continue
-		try:
-			items.append(json.loads(line))
-		except json.JSONDecodeError:
-			continue
-	return items
+	return read_jsonl(path)
 
 
 def _write_jsonl(path: Path, items: Iterable[dict]) -> None:
 	"""Write JSONL to disk with UTF-8 encoding."""
-	path.parent.mkdir(parents=True, exist_ok=True)
-	with path.open("w", encoding="utf-8") as handle:
-		for item in items:
-			handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+	write_jsonl(path, items)
 
 
 def _extract_text_from_output(record: dict) -> str | None:
 	"""Extract response text from multiple known output.jsonl formats."""
 	if "text" in record and isinstance(record["text"], str):
 		return record["text"]
-	response = record.get("response")
-	if isinstance(response, dict):
-		text = response.get("text")
-		if isinstance(text, str):
-			return text
-	if isinstance(response, str):
-		try:
-			parsed = json.loads(response)
-		except json.JSONDecodeError:
+
+	def _extract_text_from_container(container: object) -> str | None:
+		if isinstance(container, dict):
+			text = container.get("text")
+			if isinstance(text, str):
+				return text
 			return None
-		if isinstance(parsed, dict) and isinstance(parsed.get("text"), str):
-			return parsed["text"]
+		if isinstance(container, str):
+			try:
+				parsed = json.loads(container)
+			except json.JSONDecodeError:
+				# Some datasets store plain text directly in response/result.
+				return container
+			if isinstance(parsed, dict) and isinstance(parsed.get("text"), str):
+				return parsed["text"]
+		return None
+
+	result_text = _extract_text_from_container(record.get("result"))
+	if result_text is not None:
+		return result_text
+
+	response_text = _extract_text_from_container(record.get("response"))
+	if response_text is not None:
+		return response_text
 	return None
 
 
@@ -83,14 +85,14 @@ def _is_titlecase_word(token: str) -> bool:
 	return token[:1].isupper() and token[1:].islower()
 
 
-def _match_term_token(
+def _match_candidate_token(
 	token: str,
 	sentence_start: bool,
 	variant_to_term: dict[str, str],
 	normalized_to_term: dict[str, str],
 	stemmer,
 ) -> str | None:
-	"""Match a token to a plan term with strict casing + sentence-start exception."""
+	"""Match a token candidate to a plan term with strict casing rules."""
 	if token in variant_to_term:
 		return variant_to_term[token]
 
@@ -103,6 +105,64 @@ def _match_term_token(
 	if token.islower() or allow_casefold:
 		normalized = _normalize_term(token.lower() if allow_casefold else token, stemmer)
 		return normalized_to_term.get(normalized)
+	return None
+
+
+def _iter_hyphen_candidates(token: str) -> Iterable[str]:
+	"""Yield contiguous hyphen subparts for fallback matching."""
+	parts = [part for part in token.split("-") if part]
+	if len(parts) < 2:
+		return
+
+	seen: set[str] = set()
+	for start_index in range(len(parts)):
+		for end_index in range(start_index + 1, len(parts) + 1):
+			if start_index == 0 and end_index == len(parts):
+				continue
+			candidate = "-".join(parts[start_index:end_index])
+			if len(candidate) < 3:
+				continue
+			if candidate in seen:
+				continue
+			if not any(char.isalpha() for char in candidate):
+				continue
+			seen.add(candidate)
+			yield candidate
+
+
+def _match_term_token(
+	token: str,
+	sentence_start: bool,
+	variant_to_term: dict[str, str],
+	normalized_to_term: dict[str, str],
+	stemmer,
+) -> str | None:
+	"""Match a token to a plan term, including cautious hyphen-compound fallback."""
+	matched = _match_candidate_token(
+		token,
+		sentence_start,
+		variant_to_term,
+		normalized_to_term,
+		stemmer,
+	)
+	if matched is not None:
+		return matched
+
+	if "-" not in token:
+		return None
+
+	for candidate in _iter_hyphen_candidates(token):
+		candidate_at_sentence_start = sentence_start and token.startswith(candidate)
+		matched = _match_candidate_token(
+			candidate,
+			candidate_at_sentence_start,
+			variant_to_term,
+			normalized_to_term,
+			stemmer,
+		)
+		if matched is not None:
+			return matched
+
 	return None
 
 
@@ -156,28 +216,6 @@ def _prepare_term_matcher(
 	return variant_to_term, normalized_to_term, stemmer
 
 
-def _count_terms_in_texts(
-	texts: Iterable[str],
-	variant_to_term: dict[str, str],
-	normalized_to_term: dict[str, str],
-	stemmer,
-) -> dict[str, int]:
-	"""Count term usage across a collection of texts."""
-	counts: dict[str, int] = defaultdict(int)
-	for text in texts:
-		for token, sentence_start in _iter_sentence_tokens(text):
-			matched = _match_term_token(
-				token,
-				sentence_start,
-				variant_to_term,
-				normalized_to_term,
-				stemmer,
-			)
-			if matched is not None:
-				counts[matched] += 1
-	return dict(counts)
-
-
 def _list_used_terms(
 	text: str,
 	variant_to_term: dict[str, str],
@@ -200,12 +238,6 @@ def _list_used_terms(
 		seen_terms.add(matched)
 		used_terms.append(matched)
 	return used_terms
-
-
-def _count_used_terms(texts: Iterable[str], plan_entries: list[dict]) -> dict[str, int]:
-	"""Count usage of plan terms in the generated outputs."""
-	variant_to_term, normalized_to_term, stemmer = _prepare_term_matcher(plan_entries)
-	return _count_terms_in_texts(texts, variant_to_term, normalized_to_term, stemmer)
 
 
 def _init_plan(
@@ -255,28 +287,63 @@ def _update_plan(
 	plan_file: Path,
 	output_file: Path,
 	accumulate: bool,
+	evaluate_mode: str = "new",
 ) -> None:
-	"""Update used_in_output and target_remaining based on outputs."""
+	"""Update used_in_output and target_remaining based on outputs.
+
+	Modes:
+	- "new": reuse cached `used_terms` and only analyze uncached records.
+	- "all": recompute `used_terms` for every record.
+	"""
+	if evaluate_mode not in {"new", "all"}:
+		raise ValueError(f"Unknown evaluate_mode: {evaluate_mode}")
+
 	plan_entries = _read_jsonl(plan_file)
 	if not plan_entries:
 		raise FileNotFoundError(f"No plan entries found in {plan_file}")
 
 	output_records = _read_jsonl(output_file)
 	variant_to_term, normalized_to_term, stemmer = _prepare_term_matcher(plan_entries)
-	# Extract text from output records using known response formats.
-	texts = [text for record in output_records if (text := _extract_text_from_output(record))]
-	used_counts = _count_terms_in_texts(texts, variant_to_term, normalized_to_term, stemmer)
-	for record in output_records:
+	known_terms = {term for term in variant_to_term.values()}
+	used_counts: dict[str, int] = defaultdict(int)
+	recompute_all = evaluate_mode == "all"
+	for record in tqdm(output_records, desc="Updating plan", unit="record"):
+		cached_used_terms = record.get("used_terms")
+		if not recompute_all and isinstance(cached_used_terms, list):
+			normalized_cached_terms: list[str] = []
+			seen_terms: set[str] = set()
+			for term in cached_used_terms:
+				if not isinstance(term, str) or not term.strip():
+					continue
+				if term not in known_terms or term in seen_terms:
+					continue
+				seen_terms.add(term)
+				normalized_cached_terms.append(term)
+
+			record["used_terms"] = normalized_cached_terms
+			record.pop("used_term_counts", None)
+			for term in normalized_cached_terms:
+				used_counts[term] += 1
+			continue
+
 		text = _extract_text_from_output(record)
 		if not text:
 			record["used_terms"] = []
+			record.pop("used_term_counts", None)
 			continue
-		record["used_terms"] = _list_used_terms(
+
+		record_used_terms = _list_used_terms(
 			text,
 			variant_to_term,
 			normalized_to_term,
 			stemmer,
 		)
+		record["used_terms"] = record_used_terms
+		record.pop("used_term_counts", None)
+
+		for term in record_used_terms:
+			if term in known_terms:
+				used_counts[term] += 1
 
 	for entry in plan_entries:
 		term = entry.get("term")
@@ -300,9 +367,31 @@ def _update_plan(
 			target_count - corpus_count - entry["used_in_output"],
 		)
 
+	canonical_output_records: list[dict] = []
+	for record in output_records:
+		result_value = record.get("result")
+		if result_value is None:
+			result_value = record.get("response")
+		template = record.get("template")
+		if not isinstance(template, str):
+			template = ""
+		used_terms = record.get("used_terms")
+		if not isinstance(used_terms, list):
+			used_terms = []
+
+		canonical_output_records.append(
+			{
+				"id": record.get("id"),
+				"template": template,
+				"prompt": record.get("prompt"),
+				"result": result_value,
+				"used_terms": used_terms,
+			}
+		)
+
 	plan_entries.sort(key=lambda item: (item["target_remaining"], item["term"]))
 	_write_jsonl(plan_file, plan_entries)
-	_write_jsonl(output_file, output_records)
+	_write_jsonl(output_file, canonical_output_records)
 
 
 def _choose_expression(term: str, usage: list[str], rng: random.Random) -> str:
@@ -413,7 +502,6 @@ def _generate_prompts(
 			)
 
 	if prompts:
-		with output_file.open("a", encoding="utf-8") as handle:
-			for item in prompts:
-				handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+		for item in prompts:
+			append_jsonl_record(output_file, item)
 	_write_jsonl(plan_file, plan_entries)
