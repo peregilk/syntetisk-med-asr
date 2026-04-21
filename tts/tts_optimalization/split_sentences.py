@@ -29,6 +29,10 @@ DEFAULT_INPUT_PATH = Path("data/outputs/output.jsonl")
 
 # Split on whitespace after sentence punctuation, optionally including closing quote marks.
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?:(?<=[.!?])|(?<=[.!?]['»’]))\s+")
+# Last-resort fallbacks for overlong fragments.
+_COMMA_FALLBACK_SPLIT_PATTERN = re.compile(r"(?<=,)\s*")
+_CAPITAL_FALLBACK_SPLIT_PATTERN = re.compile(r"\s+(?=[A-ZÆØÅ])")
+_SPACE_FALLBACK_SPLIT_PATTERN = re.compile(r"\s+")
 _JSON_DECODER = json.JSONDecoder()
 _INVALID_ESCAPE_PATTERN = re.compile(r"\\([^\"\\/bfnrtu])")
 
@@ -211,6 +215,41 @@ def _split_into_sentences(text: str) -> list[str]:
 	return sentences
 
 
+def _split_long_sentences_with_fallbacks(sentences: list[str]) -> list[str]:
+	"""Split overlong fragments with ordered last-resort boundaries.
+
+	Order is strict and deterministic:
+	1) normal comma
+	2) before capital letter
+	3) on space
+	"""
+	patterns = (
+		_COMMA_FALLBACK_SPLIT_PATTERN,
+		_CAPITAL_FALLBACK_SPLIT_PATTERN,
+		_SPACE_FALLBACK_SPLIT_PATTERN,
+	)
+
+	refined_sentences: list[str] = []
+	for sentence in sentences:
+		fragments = [sentence]
+		for pattern in patterns:
+			next_fragments: list[str] = []
+			for fragment in fragments:
+				if len(fragment) <= MAX_CHARS:
+					next_fragments.append(fragment)
+					continue
+
+				parts = [part.strip() for part in pattern.split(fragment.strip()) if part.strip()]
+				if len(parts) <= 1:
+					next_fragments.append(fragment)
+					continue
+				next_fragments.extend(parts)
+			fragments = next_fragments
+		refined_sentences.extend(fragments)
+
+	return refined_sentences
+
+
 def _build_sentence_lengths(sentences: list[str]) -> list[int]:
 	lengths = [0]
 	running = 0
@@ -301,10 +340,13 @@ def _split_text_by_sentences(text: str) -> list[str]:
 
 	sentences = _split_into_sentences(clean_text)
 	if any(len(sentence) > MAX_CHARS for sentence in sentences):
+		sentences = _split_long_sentences_with_fallbacks(sentences)
+
+	if any(len(sentence) > MAX_CHARS for sentence in sentences):
 		longest = max(len(sentence) for sentence in sentences)
 		raise ValueError(
 			"Found a single sentence longer than max chars "
-			f"({longest}>{MAX_CHARS}); cannot split without breaking sentence boundaries. Sentence: '{clean_text}'"
+			f"({longest}>{MAX_CHARS}); cannot split without breaking sentence boundaries or fallback boundaries. Sentence: '{clean_text}'"
 		)
 
 	total_len = len(" ".join(sentences))

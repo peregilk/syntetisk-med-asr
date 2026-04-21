@@ -17,7 +17,7 @@ TTS-motorer leser best med enkel normal tegnsetting.
   - erstattes med mellomrom eller et av de ovennevnte tillatte tegnene
   - skrives med ord ut fra sammenhengen (mer enn/over (>), mindre enn/under (<), prosent (%), krøllalfa (@), pluss (+), minus (-) osv.) 
 - Hvis fjerning av et tegn krever en pustepause i opplesningen, erstatt det med et komma.
-- Bindestrek skal erstattes med mellomrom (f.eks. "ikke-plausibel" -> "ikke plausibel").
+- Bindestrek skal erstattes med mellomrom (f.eks. "ikke-plausibel" -> "ikke plausibel", "A-virus" -> "A virus", "tale- og språkevne" -> "tale og språkevne").
 - Punktum (.) skal aldri fjernes når det brukes for å avslutte en setning i input.
 
 **Tillatte endringer og særregler for TTS:**
@@ -42,6 +42,7 @@ TTS-motorer leser best med enkel normal tegnsetting.
 - Fjerne informasjon.
 - Rette opp feil i den medisinske logikken (teksten skal være tro mot input).
 - Fjerne setningsoppbyggende tegnsetting (punktum, komma, spørsmålstegn, utropstegn).
+- Skrive ut tegnsetting (eks "punktum", "komma")
 - Stave ut bokstavene i et ord når det ikke er en forkortelse.
 
 **Eksempler på transformasjoner:**
