@@ -215,14 +215,20 @@ prompts/*
 
 # Directories
 notebooks
-data/preprocessed/occurences.jsonl
-data/preprocessed/snomed_phrases.jsonl
-data/preprocessed/snomed_terms.jsonl
-data/outputs/*
+data/00_terms/processed/word_occurences.jsonl
+
+data/01_prompts/*
+!data/01_prompts/promps_batch.jsonl.zip
+
+data/02_text/*
+!data/02_text/00_text_deepseek_batch_zip
+
+data/03_tts/*
+
 data/terms_to_use.jsonl
 
 
 # Audio files
-data/audio/*.mp3
+data/04_audio/*.mp3
 
 .vscode/
