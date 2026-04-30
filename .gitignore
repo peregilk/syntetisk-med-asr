@@ -225,7 +225,7 @@ data/02_text/*
 
 data/03_tts/*
 
-data/terms_to_use.jsonl
+data/00_terms/terms_to_use.jsonl
 
 
 # Audio files

@@ -24,11 +24,11 @@ from prompt_creation.processing import preprocess_snomed as _preprocess_snomed
 # Load terms when module is imported
 _script_dir = Path(__file__).parent
 _project_root = _script_dir.parent
-_terms_file = _project_root / "data" / "snomed_ct_norwegian_terms.jsonl"
-_scenarios_file = _project_root / "data" / "categories.jsonl"
-_word_occurrence_dir = _project_root / "data" / "word_occurences"
+_terms_file = _project_root / "data" / "00_terms" / "raw" / "snomed_ct_norwegian_terms.jsonl"
+_scenarios_file = _project_root / "data" / "00_terms" / "raw" / "categories.jsonl"
+_word_occurrence_dir = _project_root / "data" / "00_terms" / "raw" / "word_occurences"
 
-_preprocessed_dir = _project_root / "data" / "preprocessed"
+_preprocessed_dir = _project_root / "data" / "00_terms" / "preprocessed"
 
 # Load SNOMED terms
 try:

@@ -241,13 +241,13 @@ def main() -> None:
     parser.add_argument(
         "--snomed-file",
         type=Path,
-        default=Path("data/preprocessed/snomed.jsonl"),
+        default=Path("data/00_terms/processed/snomed.jsonl"),
         help="Path to preprocessed SNOMED terms.",
     )
     parser.add_argument(
         "--plan-file",
         type=Path,
-        default=Path("data/terms_to_use.jsonl"),
+        default=Path("data/00_terms/terms_to_use.jsonl"),
         help="Path to the term usage plan JSONL.",
     )
     parser.add_argument(

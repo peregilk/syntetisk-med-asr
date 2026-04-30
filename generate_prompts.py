@@ -43,7 +43,7 @@ def _build_parser() -> argparse.ArgumentParser:
 	init_parser.add_argument(
 		"--plan-file",
 		type=Path,
-		default=project_root / "data" / "terms_to_use.jsonl",
+		default=project_root / "data" / "00_terms" / "terms_to_use.jsonl",
 		help="Output plan file",
 	)
 	init_parser.add_argument(
@@ -57,7 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
 	update_parser.add_argument(
 		"--plan-file",
 		type=Path,
-		default=project_root / "data" / "terms_to_use.jsonl",
+		default=project_root / "data" / "00_terms" / "terms_to_use.jsonl",
 		help="Plan file to update",
 	)
 	update_parser.add_argument(
@@ -83,13 +83,13 @@ def _build_parser() -> argparse.ArgumentParser:
 	generate_parser.add_argument(
 		"--plan-file",
 		type=Path,
-		default=project_root / "data" / "terms_to_use.jsonl",
+		default=project_root / "data" / "00_terms" / "terms_to_use.jsonl",
 		help="Plan file to use",
 	)
 	generate_parser.add_argument(
 		"--snomed-file",
 		type=Path,
-		default=project_root / "data" / "preprocessed" / "snomed.jsonl",
+		default=project_root / "data" / "00_terms" / "processed" / "snomed.jsonl",
 		help="Path to preprocessed SNOMED terms",
 	)
 	generate_parser.add_argument(
@@ -182,7 +182,7 @@ def _build_parser() -> argparse.ArgumentParser:
 	prune_parser.add_argument(
 		"--plan-file",
 		type=Path,
-		default=project_root / "data" / "terms_to_use.jsonl",
+		default=project_root / "data" / "00_terms" / "terms_to_use.jsonl",
 		help="Plan file used to determine required coverage",
 	)
 	prune_parser.add_argument(
